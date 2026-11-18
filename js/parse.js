@@ -16,9 +16,8 @@
   const RE_NIR = new RegExp('(^|[^\\d,])(' + NIR13 + '(?: ?\\d{2})?)(?![\\d,])');
   const RE_NUMBER = /(^|[^A-Za-zÀ-ÿ])([A-Z]{1,5}) ?(\d{3,})(?![\d,])/;
   const RE_AMOUNT = /()(-?(?:\d{1,3}(?:[ .]\d{3})+|\d+),\d{2})/;
-  const RE_PATIENT_LINE = new RegExp(
-    '^(\\D*?)\\s*(?:\\b(\\d{1,3})\\s+)?(' + NIR13 + '(?: ?\\d{2}(?![\\d/,]))?)(?![\\dA-Z])\\s*(' + DATE + ')?\\s*(OUI|NON)?\\s*(.*)$'
-  );
+  // Nom (facultatif), âge, NIR, puis le reste de la ligne (date, ALD, régime, dans un ordre quelconque).
+  const RE_PATIENT_LINE = new RegExp('^(\\D*?)\\s*(?:\\b(\\d{1,3})\\s+)?(' + NIR13 + '(?: ?\\d{2}(?![\\d/,]))?)(.*)$');
   const RE_TOTAL = new RegExp('Nombre total de patients au\\s*(' + DATE + ')\\s*:\\s*(\\d[\\d ]*)', 'i');
 
   // Repères posés à la place des éléments déjà extraits d'un bloc.
@@ -210,9 +209,9 @@
       const amounts = (shifted ? prev.amounts : cur.amounts).slice();
       const nir = !shifted ? cur.nir : cur.nirFirst ? cur.nir : prev.nirFirst ? '' : prev.nir;
       // Une ligne sans aucun montant reste une facture si elle porte un code (FV, FD, FP…)
-      // et un nom : elle compte pour le patient, avec un montant nul.
+      // et un nom : elle compte pour le patient, mais son montant reste inconnu.
       const empty = !amounts.length && !shifted && cur.code && cur.patient;
-      if (empty) amounts.push(0);
+      if (empty) amounts.push(null); // montant absent du journal : inconnu, pas zéro
       if (!amounts.length || (!cur.patient && !nir)) {
         if (!shifted && (cur.amounts.length || cur.nir || cur.number)) suspicious.push(`${flat.slice(dates[i].start, dates[i].end)} ${segs[i].trim()}`);
         return;
@@ -235,36 +234,77 @@
     return { records, suspicious, quality: nirConsistency(records), shifted };
   }
 
-  /** Liste de patientèle : une ligne de tableau par patient. */
+  const RE_LIST_HEADER = /^(Nombre total|Les données|celles des|LISTE COMPL|NOM PR.NOM|Page\b)/i;
+
+  /**
+   * Liste de patientèle : une ligne de tableau par patient (nom, âge, NIR, puis date
+   * d'entrée, ALD et régime dans un ordre quelconque, parfois collés). Quand le nom est
+   * trop long, il se retrouve seul sur la ligne du dessus ou du dessous.
+   */
   function parsePatientele(text) {
+    const lines = clean(text).split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim());
+    const isNameLine = (l) => !!l && !/\d/.test(l) && /[A-ZÀ-Ý]/.test(l) && !/[a-zà-ÿ]/.test(l) && !RE_LIST_HEADER.test(l);
     const records = [];
     const suspicious = [];
+    const contexts = [];
     let declaredTotal = null;
     let declaredDate = null;
-    for (const rawLine of clean(text).split(/\r?\n/)) {
-      const line = rawLine.replace(/\s+/g, ' ').trim();
+    let pending = []; // lignes de nom seules, en attente de leur ligne de données
+    const flag = (i) => contexts.push(lines.slice(Math.max(0, i - 2), i + 3).filter(Boolean).join('\n'));
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       if (!line) continue;
       const t = RE_TOTAL.exec(line);
       if (t) {
         declaredDate = toIso(t[1]);
         declaredTotal = Number(t[2].replace(/ /g, ''));
+        pending = [];
         continue;
       }
       const m = RE_PATIENT_LINE.exec(line);
-      if (m && m[1].trim()) {
-        records.push({
-          name: m[1].trim(),
-          age: m[2] ? Number(m[2]) : null,
-          nir13: nir13(m[3]),
-          since: m[4] ? toIso(m[4]) : null,
-          ald: m[5] === 'OUI',
-          regime: (m[6] || '').trim(),
-        });
-      } else if (/\d{13}/.test(line.replace(/ /g, ''))) {
-        suspicious.push(line);
+      if (!m) {
+        if (isNameLine(line)) pending.push(line);
+        else {
+          pending = [];
+          if (/\d{13}/.test(line.replace(/ /g, ''))) {
+            suspicious.push(line);
+            flag(i);
+          }
+        }
+        continue;
       }
+      let name = m[1].trim();
+      if (!name) {
+        // Nom au-dessus de la ligne de données…
+        name = pending.join(' ');
+        // …et/ou en dessous, si ces lignes ne peuvent pas appartenir au patient suivant.
+        let j = i + 1;
+        const below = [];
+        while (j < lines.length && (isNameLine(lines[j]) || !lines[j])) {
+          if (lines[j]) below.push(lines[j]);
+          j++;
+        }
+        const next = j < lines.length ? RE_PATIENT_LINE.exec(lines[j]) : null;
+        if (below.length && (!name || !next || next[1].trim())) {
+          name = (name + ' ' + below.join(' ')).trim();
+          i = j - 1;
+        }
+        if (!name) flag(i);
+      }
+      pending = [];
+      const tail = m[4] || '';
+      const date = new RegExp(DATE).exec(tail);
+      records.push({
+        name,
+        age: m[2] ? Number(m[2]) : null,
+        nir13: nir13(m[3]),
+        since: date ? toIso(date[0]) : null,
+        ald: /OUI/.test(tail),
+        regime: tail.replace(new RegExp(DATE), ' ').replace(/OUI|NON/, ' ').replace(/\s+/g, ' ').trim(),
+      });
     }
-    return { records, suspicious, declaredTotal, declaredDate, quality: 1 };
+    return { records, suspicious, contexts, declaredTotal, declaredDate, quality: 1 };
   }
 
   /**
@@ -367,7 +407,16 @@
       count: top ? top.result.records.length : 0,
       result: top ? top.result : null,
       otherCount: other ? other.result.records.length : 0,
-      structure: variants.map((v) => '# ' + v.label + '\n' + anonymize(v.text, 40, codes)).join('\n\n'),
+      structure:
+        variants.map((v) => '# ' + v.label + '\n' + anonymize(v.text, 40, codes)).join('\n\n') +
+        // Lignes à problème, anonymisées elles aussi, avec leurs voisines pour le contexte.
+        (top && (top.result.contexts || top.result.suspicious).length
+          ? '\n\n# Lignes à problème (anonymisées)\n' +
+            (top.result.contexts || top.result.suspicious)
+              .slice(0, 12)
+              .map((c) => anonymize(c, 6, codes))
+              .join('\n--\n')
+          : ''),
     };
   }
 

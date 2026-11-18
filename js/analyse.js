@@ -42,8 +42,10 @@
 
   /** Même NIR des deux côtés : est-ce la même personne ? 'sur', 'probable' ou null. */
   function samePersonSameNir(inv, list) {
-    if (!inv.length || isPrefix(inv, list)) return 'sur';
-    if (list.length < 2) return null;
+    // Nom absent d'un côté : rien ne contredit le NIR.
+    if (!inv.length || !list.length || isPrefix(inv, list)) return 'sur';
+    // Un seul mot lisible dans la patientèle (nom coupé) : à vérifier s'il figure sur la facture.
+    if (list.length < 2) return inv.includes(list[0]) ? 'probable' : null;
     const surname = list.slice(0, -1);
     const first = list[list.length - 1];
     // Nom raccourci d'un côté (« ZOLA--ZIDANE XAVIER » / « ZOLA XAVIER LOUIS ») : le premier
@@ -334,6 +336,7 @@
       horsRows: hors.sort((a, b) => b.n - a.n || a.patient.name.localeCompare(b.patient.name, 'fr')),
       reviewRows: rows.filter((r) => r.patient.review),
       unidentified,
+      noAmount: allInv.filter((i) => i.montant == null).length,
     };
   }
 

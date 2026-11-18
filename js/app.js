@@ -124,6 +124,8 @@
       return { text: `${parts.join(' · ')}. Le document en annonce ${nf.format(r.declaredTotal)} : lecture incomplète.`, warn: true };
     if (f.zone === 'factures' && r.quality < 0.9)
       return { text: `${parts.join(' · ')}. Lecture incertaine : les NIR varient d'une facture à l'autre pour un même patient.`, warn: true };
+    const nameless = f.zone === 'patientele' ? r.records.filter((p) => !p.name).length : 0;
+    if (nameless) return { text: `${parts.join(' · ')}. ${plural(nameless, 'patient sans nom lisible, rattaché', 'patients sans nom lisible, rattachés')} par le NIR seul.`, warn: true };
     if (r.suspicious.length) return { text: `${parts.join(' · ')}. ${plural(r.suspicious.length, 'passage non reconnu', 'passages non reconnus')}.`, warn: true };
     return { text: parts.join(' · '), warn: false };
   }
@@ -347,7 +349,7 @@
       stat('Factures', nf.format(s.all.invoices), `dont ${nf.format(s.hors.invoices)} hors patientèle`),
       stat('Patients facturés', nf.format(s.all.patients), `${(s.all.invoices / s.all.patients).toFixed(1).replace('.', ',')} factures par patient`),
       stat('Patientèle vue', `${pct(s.mt.patients, s.listSize)} %`, `${nf.format(s.mt.patients)} sur ${nf.format(s.listSize)} inscrits`),
-      stat('Montant facturé', eur0.format(s.all.montant), `dont ${eur0.format(s.hors.montant)} hors patientèle`),
+      stat('Montant facturé', eur0.format(s.all.montant), `dont ${eur0.format(s.hors.montant)} hors patientèle` + (s.noAmount ? ` · ${plural(s.noAmount, 'facture sans montant', 'factures sans montant')}` : '')),
     ]);
 
     /* Graphiques */
