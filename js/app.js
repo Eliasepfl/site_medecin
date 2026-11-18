@@ -15,7 +15,7 @@ const ZONES = {
   patientele: { one: 'patient', many: 'patients', none: 'Aucun patient reconnu dans ce fichier.', looksLike: 'un journal de factures' },
 };
 
-const state = { files: [], model: null, from: '', to: '', presets: [], byName: true, cleanups: [], showAll: false, search: '' };
+const state = { files: [], model: null, from: '', to: '', presets: [], byName: true, nirOnly: false, cleanups: [], showAll: false, search: '' };
 
 const nf = new Intl.NumberFormat('fr-FR');
 const eur0 = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
@@ -213,7 +213,7 @@ function refresh(resetPeriod) {
     return;
   }
   $('status').textContent = '';
-  state.model = buildModel(invoices, patientele, { matchByName: state.byName });
+  state.model = buildModel(invoices, patientele, { matchByName: state.byName, nirOnly: state.nirOnly });
 
   if (resetPeriod) {
     const dates = state.model.invoices.map((i) => i.date).sort();
@@ -441,6 +441,12 @@ function render() {
   ]);
 
   /* Rapprochements */
+  const nirOnly = h('input', { type: 'checkbox', id: 'nirOnly' });
+  nirOnly.checked = state.nirOnly;
+  nirOnly.addEventListener('change', () => {
+    state.nirOnly = nirOnly.checked;
+    refresh(false);
+  });
   const byName = h('input', { type: 'checkbox', id: 'byName' });
   byName.checked = state.byName;
   byName.addEventListener('change', () => {
@@ -458,6 +464,7 @@ function render() {
         text: 'Un patient est rattaché à la patientèle quand son NIR (13 premiers chiffres) y figure sous un nom compatible. Les cas ci-dessous ne concordent pas parfaitement.',
       }),
       h('label', { class: 'check' }, [byName, h('span', { text: 'Rattacher aussi par nom et prénom identiques quand le NIR diffère ou manque.' })]),
+      h('label', { class: 'check' }, [nirOnly, h('span', { text: 'Se fier au NIR seul : un même NIR désigne toujours la même personne, quel que soit le nom. À ne cocher que si aucun NIR ne couvre plusieurs membres d’une famille.' })]),
       ...notes.map((t) => h('p', { class: 'note', text: t })),
       s.reviewRows.length
         ? h(

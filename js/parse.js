@@ -57,12 +57,15 @@ function cleanName(raw, ref) {
   let upper = false;
   for (const t of raw.replace(RE_MARKS, ' ').split(/\s+/).filter(Boolean)) {
     const isWord = /[A-Za-zÀ-ÿ]/.test(t) && !/\d/.test(t);
+    // Un tiret ou une apostrophe isolé fait partie du nom (« DUPONT - DE LA TOUR »).
+    const isJoiner = /^[-–'’.]+$/.test(t);
     if (!words.length) {
       if (!isWord) continue;
       upper = !hasLower(t);
-    } else if (!isWord || (upper && hasLower(t))) break;
+    } else if (!isJoiner && (!isWord || (upper && hasLower(t)))) break;
     words.push(t);
   }
+  while (words.length && /^[-–'’.]+$/.test(words[words.length - 1])) words.pop();
   const name = words.join(' ');
   return ref && name.startsWith(ref + ' ') ? ref : name;
 }

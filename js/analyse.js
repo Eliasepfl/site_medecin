@@ -82,7 +82,7 @@ function groupBy(list, keyFn) {
  * Construit la liste des patients distincts présents dans les factures et
  * indique pour chacun s'il figure dans la patientèle médecin traitant.
  */
-export function buildModel(invoices, patientele, { matchByName = true } = {}) {
+export function buildModel(invoices, patientele, { matchByName = true, nirOnly = false } = {}) {
   // Factures en double (même fichier chargé deux fois, exports qui se recoupent).
   const seen = new Set();
   const unique = [];
@@ -138,7 +138,7 @@ export function buildModel(invoices, patientele, { matchByName = true } = {}) {
   for (const group of groupBy(idList, (id) => id.nir).values())
     for (let a = 0; a < group.length; a++)
       for (let b = a + 1; b < group.length; b++)
-        if (namesCompatible(group[a].tokens, group[b].tokens)) uf.union(group[a].i, group[b].i);
+        if (nirOnly || namesCompatible(group[a].tokens, group[b].tokens)) uf.union(group[a].i, group[b].i);
   if (matchByName)
     for (const group of groupBy(idList, (id) => (id.tokens.length >= 2 ? id.nameKey : '')).values())
       for (let a = 1; a < group.length; a++) uf.union(group[0].i, group[a].i);
@@ -151,7 +151,7 @@ export function buildModel(invoices, patientele, { matchByName = true } = {}) {
     for (const id of members) {
       const sameNir = id.nir ? listByNir.get(id.nir) || [] : [];
       const hit = sameNir.find(
-        (p) => !id.tokens.length || namesCompatible(id.tokens, p.tokens) || sameFirstName(id.tokens, p.tokens) || gluedName(id.tokens, p.tokens)
+        (p) => nirOnly || !id.tokens.length || namesCompatible(id.tokens, p.tokens) || sameFirstName(id.tokens, p.tokens) || gluedName(id.tokens, p.tokens)
       );
       if (hit) {
         match = 'nir';
