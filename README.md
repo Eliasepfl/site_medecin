@@ -46,13 +46,8 @@ branche `main`, dossier `/ (root)`. Le site est ensuite disponible à l'adresse
 
 ## Essayer en local
 
-Les modules JavaScript ne se chargent pas depuis `file://` ; lancer un petit serveur :
-
-```
-python -m http.server 8000
-```
-
-puis ouvrir <http://localhost:8000>.
+Double-cliquer sur `index.html` suffit : la page fonctionne aussi ouverte directement
+depuis le disque, sans serveur ni connexion.
 
 ## Fichiers
 
@@ -63,5 +58,6 @@ puis ouvrir <http://localhost:8000>.
 | `js/analyse.js` | Rapprochement des patients et indicateurs |
 | `js/charts.js` | Graphiques SVG |
 | `js/app.js` | Interface |
+| `js/boot.js` | Message d'erreur si un script ne démarre pas |
 | `vendor/pdfjs/` | pdf.js (Mozilla, licence Apache 2.0) |
 | `vendor/fonts/` | IBM Plex Sans (licence OFL) |
