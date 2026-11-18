@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- Le navigateur interdit lui-même toute connexion sortante (connect-src 'none') :
        les fichiers ne peuvent pas quitter l'ordinateur. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; worker-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; worker-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
   <title>Flux de patients</title>
@@ -15,53 +15,42 @@
 </head>
 <body>
   <main>
-    <header class="page-head">
-      <h1>Flux de patients hors patientèle</h1>
-      <p class="lead">Compte les patients distincts facturés sur une période qui ne figurent pas dans la patientèle médecin traitant.</p>
-      <p class="privacy">
-        <strong>Tout reste sur cet ordinateur.</strong>
-        Les PDF sont lus par le navigateur, rien n'est envoyé ni enregistré : pas de serveur, pas de cookie, pas de stockage.
-        Fermer ou recharger l'onglet efface tout.
-      </p>
+    <header class="top">
+      <div>
+        <h1>Flux de patients</h1>
+        <p class="lead">Patients facturés qui ne figurent pas dans la patientèle médecin traitant.</p>
+      </div>
+      <button type="button" class="quiet no-print" id="resetBtn" hidden>Tout effacer</button>
     </header>
 
-    <section class="card no-print" id="import">
-      <h2>1. Déposer les PDF</h2>
-      <p class="hint">Le journal des factures et la liste complète de patientèle médecin traitant (plusieurs fichiers possibles). Le type de chaque fichier est reconnu automatiquement.</p>
-      <label class="drop" id="drop">
-        <input type="file" id="file" accept="application/pdf,.pdf" multiple>
-        <span class="drop-main">Déposer les fichiers ici</span>
-        <span class="drop-sub">ou cliquer pour les choisir</span>
-      </label>
-      <ul class="files" id="files"></ul>
-      <p class="status" id="status" role="status" aria-live="polite"></p>
-      <details class="paste">
-        <summary>Un PDF n'est pas lu correctement ? Coller son texte</summary>
-        <p class="hint">Ouvrir le PDF, tout sélectionner (Ctrl + A), copier (Ctrl + C), puis coller ici. À faire séparément pour chaque document.</p>
-        <textarea id="pasteText" rows="6" spellcheck="false" aria-label="Texte copié depuis le PDF"></textarea>
-        <button type="button" id="pasteBtn">Ajouter ce texte</button>
-      </details>
+    <section class="zones no-print" aria-label="Documents">
+      <div class="zone" id="zone-factures">
+        <h2>Factures</h2>
+        <p class="zone-hint">Journal des factures, en PDF.</p>
+        <ul class="files" id="files-factures"></ul>
+        <label class="pick">
+          <input type="file" id="file-factures" accept="application/pdf,.pdf" multiple>
+          <span>Déposer ou choisir un fichier</span>
+        </label>
+      </div>
+      <div class="zone" id="zone-patientele">
+        <h2>Patientèle</h2>
+        <p class="zone-hint">Liste complète de patientèle médecin traitant, en PDF.</p>
+        <ul class="files" id="files-patientele"></ul>
+        <label class="pick">
+          <input type="file" id="file-patientele" accept="application/pdf,.pdf" multiple>
+          <span>Déposer ou choisir un fichier</span>
+        </label>
+      </div>
     </section>
 
-    <section class="filters no-print" id="filters" hidden>
-      <div class="field">
-        <label for="from">Du</label>
-        <input type="date" id="from">
-      </div>
-      <div class="field">
-        <label for="to">Au</label>
-        <input type="date" id="to">
-      </div>
-      <div class="presets" id="presets" role="group" aria-label="Périodes prédéfinies"></div>
-      <label class="check">
-        <input type="checkbox" id="byName" checked>
-        <span>Rapprocher aussi par nom et prénom identiques quand le NIR diffère ou manque</span>
-      </label>
-      <div class="actions">
-        <button type="button" id="printBtn">Imprimer</button>
-        <button type="button" id="resetBtn">Tout effacer</button>
-      </div>
-    </section>
+    <p class="privacy no-print">Les fichiers sont lus par ce navigateur et ne quittent pas cet ordinateur. Rien n'est enregistré : fermer l'onglet efface tout.</p>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+
+    <details class="help no-print" id="help">
+      <summary>Un PDF est mal lu ?</summary>
+      <div id="helpBody"></div>
+    </details>
 
     <div id="dash" hidden></div>
   </main>

@@ -2,7 +2,7 @@
 // Aucune donnée n'est envoyée ni conservée (pas de fetch, pas de stockage, pas de cookie).
 
 import * as pdfjs from '../vendor/pdfjs/pdf.min.mjs';
-import { readDocument, readText } from './parse.js';
+import { readAs, readTextAs } from './parse.js';
 import { buildModel, computeStats } from './analyse.js';
 import { h, columnChart, segmentedBar, legend, table } from './charts.js';
 
@@ -10,8 +10,12 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/pdf.worker.min.mj
 
 const $ = (id) => document.getElementById(id);
 const DEFAULT_FROM = '2024-01-01'; // « depuis le 31/12/2023 »
+const ZONES = {
+  factures: { one: 'facture', many: 'factures', none: 'Aucune facture reconnue dans ce fichier.', looksLike: 'une liste de patientèle' },
+  patientele: { one: 'patient', many: 'patients', none: 'Aucun patient reconnu dans ce fichier.', looksLike: 'un journal de factures' },
+};
 
-const state = { files: [], model: null, cleanups: [], showAll: false, search: '' };
+const state = { files: [], model: null, from: '', to: '', presets: [], byName: true, cleanups: [], showAll: false, search: '' };
 
 const nf = new Intl.NumberFormat('fr-FR');
 const eur0 = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
@@ -22,6 +26,8 @@ const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'aoû
 const MONTHS_LONG = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
 const plural = (n, one, many) => `${nf.format(n)} ${n > 1 ? many : one}`;
+// NIR à la française : sexe, année, mois, département, commune, ordre.
+const fmtNir = (n) => (n ? `${n[0]} ${n.slice(1, 3)} ${n.slice(3, 5)} ${n.slice(5, 7)} ${n.slice(7, 10)} ${n.slice(10, 13)}` : '—');
 
 /* ---------- Lecture des fichiers ---------- */
 
@@ -56,164 +62,212 @@ async function extractPages(file, onProgress) {
   return pages;
 }
 
-async function addFiles(fileList) {
-  const files = [...fileList];
-  if (!files.length) return;
-  for (const file of files) {
-    const entry = { name: file.name, type: 'lecture', count: 0, pages: 0, result: null, text: '', error: '' };
+function accept(entry, doc, hasText = true) {
+  const z = ZONES[entry.zone];
+  Object.assign(entry, { status: 'ok', count: doc.count, result: doc.result, structure: doc.structure });
+  if (doc.count) return;
+  entry.status = 'error';
+  entry.message = !hasText
+    ? 'Aucun texte dans ce PDF (document scanné ?).'
+    : doc.otherCount
+      ? `Ce fichier ressemble à ${z.looksLike}. Déposez-le dans l'autre zone.`
+      : `${z.none} Voir « Un PDF est mal lu ? » ci-dessous.`;
+}
+
+async function addFiles(zone, fileList) {
+  for (const file of [...fileList]) {
+    const entry = { zone, name: file.name, status: 'reading', count: 0, pages: 0, result: null, structure: '', message: 'Lecture…' };
     state.files.push(entry);
-    renderFiles();
+    renderZones();
     try {
       const pages = await extractPages(file, (p, n) => {
-        $('status').textContent = `Lecture de ${file.name} — page ${p} sur ${n}…`;
+        entry.message = `Lecture, page ${p} sur ${n}…`;
+        renderZones();
       });
       entry.pages = pages.length;
       const chars = pages.reduce((s, pg) => s + pg.reduce((t, it) => t + it.str.length, 0), 0);
-      const doc = readDocument(pages);
-      Object.assign(entry, { type: doc.type, count: doc.count, result: doc.result, text: doc.text });
-      if (doc.type === 'inconnu')
-        entry.error = chars < 20
-          ? 'Aucun texte dans ce PDF (document scanné ?).'
-          : "Format non reconnu : ni journal de factures, ni liste de patientèle.";
+      accept(entry, readAs(zone, pages), chars >= 20);
     } catch (err) {
-      entry.type = 'inconnu';
-      entry.error = err && err.name === 'PasswordException' ? 'PDF protégé par mot de passe.' : 'Lecture impossible : ' + (err && err.message ? err.message : err);
+      entry.status = 'error';
+      entry.message =
+        err && err.name === 'PasswordException'
+          ? 'PDF protégé par mot de passe.'
+          : err && err.name === 'InvalidPDFException'
+            ? "Ce fichier n'est pas un PDF lisible."
+            : 'Lecture impossible : ' + (err && err.message ? err.message : err);
     }
-    renderFiles();
+    renderZones();
   }
-  $('status').textContent = '';
   refresh(true);
 }
 
-function addPastedText() {
-  const text = $('pasteText').value;
+function addPastedText(zone, text) {
   if (!text.trim()) return;
-  const doc = readText(text);
-  state.files.push({
-    name: 'Texte collé',
-    type: doc.type,
-    count: doc.count,
-    pages: 0,
-    result: doc.result,
-    text: doc.text,
-    error: doc.type === 'inconnu' ? 'Format non reconnu.' : '',
-  });
-  $('pasteText').value = '';
-  renderFiles();
+  const entry = { zone, name: 'Texte collé', status: 'ok', count: 0, pages: 0, result: null, structure: '', message: '' };
+  accept(entry, readTextAs(zone, text));
+  state.files.push(entry);
+  renderZones();
   refresh(true);
 }
 
-function renderFiles() {
-  const typeLabel = { factures: 'Factures', patientele: 'Patientèle', inconnu: 'Non reconnu', lecture: 'Lecture…' };
-  $('files').replaceChildren(
-    ...state.files.map((f, i) => {
-      let detail = '';
-      if (f.type === 'factures') detail = plural(f.count, 'ligne de facture', 'lignes de facture');
-      if (f.type === 'patientele') {
-        detail = plural(f.count, 'patient', 'patients');
-        const d = f.result.declaredTotal;
-        if (d != null) detail += d === f.count ? ' (conforme au total annoncé)' : ` — le document en annonce ${nf.format(d)}`;
-      }
-      if (f.pages) detail += ` · ${plural(f.pages, 'page', 'pages')}`;
-      const remove = h('button', { type: 'button', class: 'link', 'aria-label': `Retirer ${f.name}`, text: 'Retirer' });
-      remove.addEventListener('click', () => {
-        state.files.splice(i, 1);
-        renderFiles();
-        refresh(true);
+function fileDetail(f) {
+  if (f.status !== 'ok') return { text: f.message, warn: f.status === 'error' };
+  const z = ZONES[f.zone];
+  const parts = [plural(f.count, z.one, z.many)];
+  if (f.pages) parts.push(plural(f.pages, 'page', 'pages'));
+  const r = f.result;
+  if (f.zone === 'patientele' && r.declaredTotal != null && r.declaredTotal !== f.count)
+    return { text: `${parts.join(' · ')}. Le document en annonce ${nf.format(r.declaredTotal)} : lecture incomplète.`, warn: true };
+  if (f.zone === 'factures' && r.quality < 0.9)
+    return { text: `${parts.join(' · ')}. Lecture incertaine : les NIR varient d'une facture à l'autre pour un même patient.`, warn: true };
+  if (r.suspicious.length) return { text: `${parts.join(' · ')}. ${plural(r.suspicious.length, 'passage non reconnu', 'passages non reconnus')}.`, warn: true };
+  return { text: parts.join(' · '), warn: false };
+}
+
+function renderZones() {
+  for (const zone of Object.keys(ZONES)) {
+    const mine = state.files.filter((f) => f.zone === zone);
+    $('files-' + zone).replaceChildren(
+      ...mine.map((f) => {
+        const d = fileDetail(f);
+        const remove = h('button', { type: 'button', class: 'quiet', 'aria-label': `Retirer ${f.name}`, text: 'Retirer' });
+        remove.addEventListener('click', () => {
+          state.files.splice(state.files.indexOf(f), 1);
+          renderZones();
+          refresh(true);
+        });
+        return h('li', { class: 'file' }, [
+          h('span', { class: 'file-name', text: f.name }),
+          h('span', { class: d.warn ? 'file-detail warn' : 'file-detail', text: d.text }),
+          f.status === 'reading' ? null : remove,
+        ]);
+      })
+    );
+    $('zone-' + zone).querySelector('.pick span').textContent = mine.length ? 'Ajouter un fichier' : 'Déposer ou choisir un fichier';
+  }
+  $('resetBtn').hidden = !state.files.length;
+  renderHelp();
+}
+
+function renderHelp() {
+  const text = h('textarea', { id: 'pasteText', rows: '5', spellcheck: 'false', 'aria-label': 'Texte copié depuis le PDF' });
+  const btn = (zone, label) => {
+    const b = h('button', { type: 'button', text: label });
+    b.addEventListener('click', () => addPastedText(zone, text.value));
+    return b;
+  };
+  const blocks = [
+    h('h3', { text: 'Coller le texte du PDF' }),
+    h('p', { text: 'Ouvrir le PDF, tout sélectionner (Ctrl + A), copier (Ctrl + C), puis coller ici.' }),
+    text,
+    h('div', { class: 'row' }, [btn('factures', 'Ajouter comme factures'), btn('patientele', 'Ajouter comme patientèle')]),
+  ];
+  const read = state.files.filter((f) => f.structure);
+  if (read.length) {
+    blocks.push(
+      h('h3', { text: 'Structure du texte lu, sans les données' }),
+      h('p', {
+        text: 'Chaque lettre est remplacée par A et chaque chiffre par 9 : ce bloc ne contient ni nom, ni NIR, ni montant. Il peut être transmis tel quel pour faire corriger la lecture.',
+      })
+    );
+    for (const f of read) {
+      const pre = h('pre', { tabindex: '0', text: f.structure });
+      const copy = h('button', { type: 'button', text: 'Copier' });
+      copy.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(`${f.zone} — ${plural(f.count, 'ligne lue', 'lignes lues')}\n${f.structure}`);
+          copy.textContent = 'Copié';
+        } catch {
+          getSelection().selectAllChildren(pre);
+        }
       });
-      const warn = f.type === 'patientele' && f.result.declaredTotal != null && f.result.declaredTotal !== f.count;
-      return h('li', { class: f.error || warn ? 'file warn' : 'file' }, [
-        h('span', { class: 'badge ' + f.type, text: typeLabel[f.type] }),
-        h('span', { class: 'file-name', text: f.name }),
-        h('span', { class: 'file-detail', text: f.error || detail }),
-        f.type === 'lecture' ? null : remove,
-      ]);
-    })
-  );
+      blocks.push(h('div', { class: 'head' }, [h('strong', { text: `${f.name} (${f.zone === 'factures' ? 'factures' : 'patientèle'})` }), copy]), pre);
+      if (f.result && f.result.suspicious.length)
+        blocks.push(
+          h('p', { class: 'warn', text: `${plural(f.result.suspicious.length, 'passage non reconnu', 'passages non reconnus')} (données réelles, affichées uniquement ici) :` }),
+          h('pre', { text: f.result.suspicious.slice(0, 30).map((t) => (t.length > 300 ? t.slice(0, 300) + '…' : t)).join('\n') })
+        );
+    }
+  }
+  const keep = $('pasteText') ? $('pasteText').value : '';
+  $('helpBody').replaceChildren(...blocks);
+  text.value = keep;
 }
 
 /* ---------- Analyse ---------- */
 
 function refresh(resetPeriod) {
-  const invoices = state.files.filter((f) => f.type === 'factures').flatMap((f) => f.result.records);
-  const patientele = state.files.filter((f) => f.type === 'patientele').flatMap((f) => f.result.records);
-  const busy = state.files.some((f) => f.type === 'lecture');
-  const ready = invoices.length > 0 && patientele.length > 0;
+  const ok = (zone) => state.files.filter((f) => f.zone === zone && f.status === 'ok').flatMap((f) => f.result.records);
+  const invoices = ok('factures');
+  const patientele = ok('patientele');
+  const busy = state.files.some((f) => f.status === 'reading');
 
-  if (!ready) {
+  if (!invoices.length || !patientele.length) {
     state.model = null;
-    $('filters').hidden = true;
     $('dash').hidden = true;
-    if (!busy && state.files.length) {
-      $('status').textContent = !invoices.length && !patientele.length
-        ? 'Aucun document exploitable pour le moment.'
-        : !invoices.length
-          ? 'Il manque le journal des factures.'
-          : 'Il manque la liste de patientèle médecin traitant.';
-    } else if (!state.files.length) $('status').textContent = '';
+    $('status').textContent = busy || (!invoices.length && !patientele.length)
+      ? ''
+      : !invoices.length
+        ? 'Ajoutez le journal des factures pour calculer le flux.'
+        : 'Ajoutez la liste de patientèle pour calculer le flux.';
     return;
   }
   $('status').textContent = '';
-  state.model = buildModel(invoices, patientele, { matchByName: $('byName').checked });
+  state.model = buildModel(invoices, patientele, { matchByName: state.byName });
 
   if (resetPeriod) {
     const dates = state.model.invoices.map((i) => i.date).sort();
-    const max = dates[dates.length - 1];
     const min = dates[0];
-    $('from').value = max >= DEFAULT_FROM ? DEFAULT_FROM : min;
-    $('to').value = max;
-    const years = [...new Set(dates.map((d) => d.slice(0, 4)))].filter((y) => y + '-12-31' >= DEFAULT_FROM);
-    const presets = [{ label: 'Depuis le 01/01/2024', from: $('from').value, to: max }].concat(
+    const max = dates[dates.length - 1];
+    state.from = max >= DEFAULT_FROM ? DEFAULT_FROM : min;
+    state.to = max;
+    const years = [...new Set(dates.map((d) => d.slice(0, 4)))].filter((y) => y + '-12-31' >= state.from);
+    state.presets = [{ label: max >= DEFAULT_FROM ? 'Depuis 2024' : 'Tout', from: state.from, to: max }].concat(
       years.length > 1 ? years.map((y) => ({ label: y, from: y + '-01-01', to: y + '-12-31' > max ? max : y + '-12-31' })) : []
     );
-    if (max < DEFAULT_FROM) presets[0].label = 'Toute la période';
-    $('presets').replaceChildren(
-      ...presets.map((p) => {
-        const b = h('button', { type: 'button', class: 'preset', text: p.label });
-        b.dataset.from = p.from;
-        b.dataset.to = p.to;
-        b.addEventListener('click', () => {
-          $('from').value = p.from;
-          $('to').value = p.to;
-          render();
-        });
-        return b;
-      })
-    );
   }
-  $('filters').hidden = false;
   $('dash').hidden = false;
   render();
 }
 
 /* ---------- Tableau de bord ---------- */
 
-function card(title, subtitle, children, cls = '') {
-  return h('section', { class: 'card ' + cls }, [
-    h('h3', { text: title }),
-    subtitle ? h('p', { class: 'hint', text: subtitle }) : null,
-    ...[].concat(children),
-  ]);
-}
-
-function tile(label, value, sub) {
-  return h('div', { class: 'tile' }, [
-    h('div', { class: 'tile-label', text: label }),
-    h('div', { class: 'tile-value', text: value }),
-    sub ? h('div', { class: 'tile-sub', text: sub }) : null,
-  ]);
-}
-
-function dataDetails(columns, rows) {
-  return h('details', { class: 'data' }, [h('summary', { text: 'Voir les données' }), h('div', { class: 'scroll' }, table(columns, rows))]);
-}
-
-function chartCard(title, subtitle, series, labels, format, tableFormat, ariaLabel) {
+function chartFigure(title, subtitle, series, labels, format, tableFormat, ariaLabel) {
   const holder = h('div', { class: 'chart-holder' });
   const columns = [{ label: labels.head }].concat(series.map((s) => ({ label: s.name, num: true })));
   const rows = labels.items.map((l, i) => [l.long].concat(series.map((s) => tableFormat(s.values[i]))));
-  const el = card(title, subtitle, [series.length > 1 ? legend(series) : null, holder, dataDetails(columns, rows)]);
+  const el = h('figure', {}, [
+    h('figcaption', {}, [h('h3', { text: title }), h('p', { text: subtitle })]),
+    series.length > 1 ? legend(series) : null,
+    holder,
+    h('details', { class: 'data' }, [h('summary', { text: 'Voir les données' }), h('div', { class: 'scroll' }, table(columns, rows))]),
+  ]);
   return { el, mount: () => state.cleanups.push(columnChart(holder, { labels: labels.items, series, format, ariaLabel })) };
+}
+
+function periodBar() {
+  const input = (id, label, value, key) => {
+    const el = h('input', { type: 'date', id, value });
+    el.addEventListener('change', () => {
+      state[key] = el.value;
+      render();
+    });
+    return h('label', {}, [label, el]);
+  };
+  const presets = state.presets.map((p) => {
+    const b = h('button', { type: 'button', class: 'preset', text: p.label, 'aria-pressed': String(p.from === state.from && p.to === state.to) });
+    b.addEventListener('click', () => {
+      state.from = p.from;
+      state.to = p.to;
+      render();
+    });
+    return b;
+  });
+  return h('div', { class: 'period no-print' }, [
+    input('from', 'Du', state.from, 'from'),
+    input('to', 'au', state.to, 'to'),
+    h('div', { class: 'presets', role: 'group', 'aria-label': 'Périodes' }, presets),
+  ]);
 }
 
 function render() {
@@ -221,47 +275,53 @@ function render() {
   if (!model) return;
   state.cleanups.forEach((f) => f());
   state.cleanups = [];
-  const from = $('from').value;
-  const to = $('to').value;
-  for (const b of $('presets').children) b.setAttribute('aria-pressed', String(b.dataset.from === from && b.dataset.to === to));
+  const { from, to } = state;
   const dash = $('dash');
-  if (!from || !to || from > to) {
-    dash.replaceChildren(h('p', { class: 'status', text: 'Choisir une période valide (date de début avant la date de fin).' }));
-    return;
-  }
+  const focusId = document.activeElement && dash.contains(document.activeElement) ? document.activeElement.id : '';
+  const bar = periodBar();
+  const done = (...nodes) => {
+    dash.replaceChildren(bar, ...nodes.filter(Boolean));
+    const el = focusId && $(focusId);
+    if (el) el.focus();
+    if (el && el.type === 'search') el.setSelectionRange(el.value.length, el.value.length);
+  };
+  if (!from || !to || from > to) return done(h('p', { class: 'status', text: 'Choisissez une date de début antérieure à la date de fin.' }));
   const s = computeStats(model, from, to);
   const period = `du ${frDate(from)} au ${frDate(to)}`;
-  if (!s.all.invoices) {
-    dash.replaceChildren(h('p', { class: 'status', text: `Aucune facture ${period}.` }));
-    return;
-  }
+  if (!s.all.invoices) return done(h('p', { class: 'status', text: `Aucune facture ${period}.` }));
 
-  /* Chiffre principal + indicateurs */
-  const hero = h('section', { class: 'card hero' }, [
-    h('div', { class: 'hero-label', text: 'Flux de patients hors patientèle' }),
-    h('div', { class: 'hero-value', text: nf.format(s.hors.patients) }),
-    h('p', {
-      class: 'hero-sub',
-      text: `${s.hors.patients > 1 ? 'patients distincts facturés' : 'patient distinct facturé'} ${period}, absents de la patientèle médecin traitant. Un patient revenu plusieurs fois ne compte qu'une fois.`,
-    }),
-  ]);
-  const tiles = h('div', { class: 'tiles' }, [
-    tile('Factures sur la période', nf.format(s.all.invoices), `dont ${nf.format(s.hors.invoices)} hors patientèle (${pct(s.hors.invoices, s.all.invoices)} %)`),
-    tile('Patients distincts facturés', nf.format(s.all.patients), `${(s.all.invoices / s.all.patients).toFixed(1).replace('.', ',')} factures par patient en moyenne`),
-    tile('Patientèle médecin traitant vue', nf.format(s.mt.patients), `sur ${nf.format(s.listSize)} patients dans la liste (${pct(s.mt.patients, s.listSize)} %)`),
-    tile('Montant facturé', eur0.format(s.all.montant), `dont ${eur0.format(s.hors.montant)} hors patientèle (${pct(s.hors.montant, s.all.montant)} %)`),
-  ]);
-
-  const splitHolder = h('div');
+  /* Chiffre principal */
+  const split = h('div');
   segmentedBar(
-    splitHolder,
+    split,
     [
-      { name: 'Patientèle médecin traitant', value: s.mt.patients, cls: 's-mt' },
-      { name: 'Hors patientèle', value: s.hors.patients, cls: 's-hors' },
+      { name: 'hors patientèle', value: s.hors.patients, cls: 's-hors' },
+      { name: 'patientèle médecin traitant', value: s.mt.patients, cls: 's-mt' },
     ],
-    (v) => plural(v, 'patient', 'patients')
+    (v) => nf.format(v)
   );
-  const split = card('Répartition des patients facturés', `Patients distincts ${period}.`, splitHolder);
+  const unread = state.files.filter((f) => f.zone === 'factures' && f.status === 'ok').reduce((n, f) => n + f.result.suspicious.length, 0);
+  const hero = h('section', { class: 'hero' }, [
+    unread
+      ? h('p', {
+          class: 'alert',
+          role: 'alert',
+          text: `${plural(unread, 'passage du journal des factures n’a pas été reconnu', 'passages du journal des factures n’ont pas été reconnus')} : le résultat peut être incomplet. Détail dans « Un PDF est mal lu ? ».`,
+        })
+      : null,
+    h('div', { class: 'hero-value', text: nf.format(s.hors.patients) }),
+    h('h2', { text: s.hors.patients > 1 ? 'patients hors patientèle' : 'patient hors patientèle' }),
+    h('p', { text: `Patients distincts facturés ${period}, absents de la liste médecin traitant. Un patient revenu plusieurs fois compte une fois.` }),
+    split,
+  ]);
+
+  const stat = (label, value, sub) => h('div', {}, [h('dt', { text: label }), h('dd', { class: 'v', text: value }), h('dd', { class: 's', text: sub })]);
+  const stats = h('dl', { class: 'stats' }, [
+    stat('Factures', nf.format(s.all.invoices), `dont ${nf.format(s.hors.invoices)} hors patientèle`),
+    stat('Patients facturés', nf.format(s.all.patients), `${(s.all.invoices / s.all.patients).toFixed(1).replace('.', ',')} factures par patient`),
+    stat('Patientèle vue', `${pct(s.mt.patients, s.listSize)} %`, `${nf.format(s.mt.patients)} sur ${nf.format(s.listSize)} inscrits`),
+    stat('Montant facturé', eur0.format(s.all.montant), `dont ${eur0.format(s.hors.montant)} hors patientèle`),
+  ]);
 
   /* Graphiques */
   const monthLabels = {
@@ -271,48 +331,47 @@ function render() {
       return { short: mo === 1 ? String(y) : MONTHS[mo - 1], long: `${MONTHS_LONG[mo - 1]} ${y}`, major: mo === 1 };
     }),
   };
-  const axisInt = (v, axis) => (axis && v >= 10000 ? compact.format(v) : nf.format(Math.round(v * 10) / 10));
-  const axisEur = (v, axis) => (axis ? (v >= 10000 ? compact.format(v) + ' €' : nf.format(v) + ' €') : eur0.format(v));
-  const MT = 'Patientèle médecin traitant';
+  const axisInt = (v, axis) => (axis && v >= 10000 ? compact.format(v) : nf.format(v));
+  const axisEur = (v, axis) => (axis ? (v >= 10000 ? compact.format(v) : nf.format(v)) + ' €' : eur0.format(v));
   const HORS = 'Hors patientèle';
-
+  const MT = 'Patientèle';
   const charts = [
-    chartCard(
+    chartFigure(
       'Factures par mois',
-      'Nombre de factures, selon que le patient figure ou non dans la patientèle.',
+      'Selon que le patient figure ou non dans la patientèle.',
       [
-        { name: MT, cls: 's-mt', values: s.months.map((m) => m.invMT) },
         { name: HORS, cls: 's-hors', values: s.months.map((m) => m.invHors) },
+        { name: MT, cls: 's-mt', values: s.months.map((m) => m.invMT) },
       ],
       monthLabels,
       axisInt,
       (v) => nf.format(v),
-      'Factures par mois, patientèle et hors patientèle.'
+      'Factures par mois, hors patientèle et patientèle.'
     ),
-    chartCard(
-      'Nouveaux patients hors patientèle par mois',
-      'Chaque patient hors patientèle est compté une seule fois, le mois de sa première facture sur la période.',
+    chartFigure(
+      'Nouveaux patients hors patientèle',
+      'Chaque patient compte le mois de sa première facture sur la période.',
       [{ name: 'Nouveaux patients hors patientèle', cls: 's-hors', values: s.months.map((m) => m.newHors) }],
       monthLabels,
       axisInt,
       (v) => nf.format(v),
       'Nouveaux patients hors patientèle par mois.'
     ),
-    chartCard(
+    chartFigure(
       'Montant facturé par mois',
-      'Colonne « Montant » des factures.',
+      'Colonne « Montant » du journal.',
       [
-        { name: MT, cls: 's-mt', values: s.months.map((m) => m.amtMT) },
         { name: HORS, cls: 's-hors', values: s.months.map((m) => m.amtHors) },
+        { name: MT, cls: 's-mt', values: s.months.map((m) => m.amtMT) },
       ],
       monthLabels,
       axisEur,
       (v) => eur2.format(v),
-      'Montant facturé par mois, patientèle et hors patientèle.'
+      'Montant facturé par mois, hors patientèle et patientèle.'
     ),
-    chartCard(
-      'Fréquence des patients hors patientèle',
-      'Nombre de patients hors patientèle selon leur nombre de factures sur la période.',
+    chartFigure(
+      'Fidélité hors patientèle',
+      'Patients hors patientèle selon leur nombre de factures sur la période.',
       [{ name: 'Patients hors patientèle', cls: 's-hors', values: s.buckets.map((b) => b.count) }],
       {
         head: 'Nombre de factures',
@@ -323,12 +382,12 @@ function render() {
       'Patients hors patientèle selon leur nombre de factures.'
     ),
   ];
-  const grid = h('div', { class: 'grid' }, charts.map((c) => c.el));
+  const chartGrid = h('section', { class: 'charts' }, charts.map((c) => c.el));
 
   /* Par année */
-  const years = card(
-    'Par année',
-    'Un patient vu sur plusieurs années est compté dans chacune ; « nouveaux » = première facture de la période cette année-là.',
+  const years = h('section', {}, [
+    h('h2', { text: 'Par année' }),
+    h('p', { class: 'note', text: 'Un patient vu plusieurs années compte dans chacune. Nouveaux : première facture de la période cette année-là.' }),
     h(
       'div',
       { class: 'scroll' },
@@ -336,7 +395,7 @@ function render() {
         [
           { label: 'Année' },
           { label: 'Factures', num: true },
-          { label: 'Patients distincts', num: true },
+          { label: 'Patients', num: true },
           { label: 'Patientèle', num: true },
           { label: 'Hors patientèle', num: true },
           { label: 'Nouveaux hors patientèle', num: true },
@@ -347,91 +406,76 @@ function render() {
           .concat([['Période', nf.format(s.all.invoices), nf.format(s.all.patients), nf.format(s.mt.patients), nf.format(s.hors.patients), nf.format(s.hors.patients), eur0.format(s.all.montant)]]),
         { cls: 'total-last' }
       )
-    )
-  );
+    ),
+  ]);
 
   /* Liste des patients hors patientèle */
   const q = state.search.trim().toUpperCase();
-  const filtered = q ? s.horsRows.filter((r) => r.patient.name.toUpperCase().includes(q) || r.patient.nir.includes(q)) : s.horsRows;
-  const shown = state.showAll ? filtered : filtered.slice(0, 50);
-  const search = h('input', { type: 'search', id: 'search', placeholder: 'Rechercher un nom ou un NIR', 'aria-label': 'Rechercher un patient', value: state.search });
+  const qDigits = q.replace(/\s/g, '');
+  const filtered = q ? s.horsRows.filter((r) => r.patient.name.toUpperCase().includes(q) || (qDigits && r.patient.nir.includes(qDigits))) : s.horsRows;
+  const shown = state.showAll || q ? filtered : filtered.slice(0, 25);
+  const search = h('input', { type: 'search', id: 'search', placeholder: 'Nom ou NIR', 'aria-label': 'Rechercher un patient', value: state.search });
   search.addEventListener('input', () => {
     state.search = search.value;
     render();
-    const again = $('search');
-    again.focus();
-    again.setSelectionRange(again.value.length, again.value.length);
   });
   const csvBtn = h('button', { type: 'button', text: 'Exporter en CSV' });
   csvBtn.addEventListener('click', () => exportCsv(s));
-  const more = filtered.length > shown.length ? h('button', { type: 'button', class: 'link', text: `Afficher les ${nf.format(filtered.length)} patients` }) : null;
+  const more = filtered.length > shown.length ? h('button', { type: 'button', class: 'quiet', id: 'more', text: `Afficher les ${nf.format(filtered.length)} patients` }) : null;
   if (more)
     more.addEventListener('click', () => {
       state.showAll = true;
       render();
     });
-  const list = card('Patients hors patientèle', `${plural(s.hors.patients, 'patient', 'patients')} ${period}, du plus fréquent au moins fréquent.`, [
-    h('div', { class: 'toolbar no-print' }, [search, csvBtn]),
+  const list = h('section', {}, [
+    h('div', { class: 'head' }, [h('h2', { text: 'Patients hors patientèle' }), h('div', { class: 'row no-print' }, [search, csvBtn])]),
     h(
       'div',
       { class: 'scroll' },
       table(
         [{ label: 'Patient' }, { label: 'NIR' }, { label: 'Factures', num: true }, { label: 'Première' }, { label: 'Dernière' }, { label: 'Montant', num: true }],
-        shown.map((r) => [r.patient.name, r.patient.nir || '—', nf.format(r.n), frDate(r.first), frDate(r.last), eur2.format(r.montant)])
+        shown.map((r) => [r.patient.name, fmtNir(r.patient.nir), nf.format(r.n), frDate(r.first), frDate(r.last), eur2.format(r.montant)])
       )
     ),
-    more,
+    more ? h('div', {}, more) : null,
   ]);
 
-  /* Cas à vérifier + contrôle de lecture */
-  const review = h('details', { class: 'card fold' }, [
-    h('summary', { text: `Rapprochements à vérifier (${nf.format(s.reviewRows.length)})` }),
-    h('p', { class: 'hint', text: 'Cas où le NIR et le nom ne concordent pas parfaitement entre les factures et la liste de patientèle.' }),
-    s.reviewRows.length
-      ? h(
-          'div',
-          { class: 'scroll' },
-          table(
-            [{ label: 'Patient (facture)' }, { label: 'NIR' }, { label: 'Classé' }, { label: 'Remarque' }],
-            s.reviewRows.map((r) => [r.patient.name, r.patient.nir || '—', r.patient.inList ? 'Patientèle' : 'Hors patientèle', r.patient.review.text]),
-            { cls: 'wrap-last' }
-          )
-        )
-      : h('p', { text: 'Rien à signaler.' }),
-  ]);
-
+  /* Rapprochements */
+  const byName = h('input', { type: 'checkbox', id: 'byName' });
+  byName.checked = state.byName;
+  byName.addEventListener('change', () => {
+    state.byName = byName.checked;
+    refresh(false);
+  });
   const notes = [];
   if (model.duplicates) notes.push(`${plural(model.duplicates, 'facture en double ignorée', 'factures en double ignorées')} (même date, même numéro, même patient).`);
-  if (s.unidentified) notes.push(`${plural(s.unidentified, 'facture', 'factures')} sans nom ni NIR sur la période : non comptée(s) parmi les patients.`);
-  const fileNotes = state.files
-    .filter((f) => f.result)
-    .map((f) => {
-      const bad = f.result.suspicious;
-      return h('div', { class: 'diag-file' }, [
-        h('h4', { text: `${f.name} — ${f.type === 'factures' ? plural(f.count, 'ligne lue', 'lignes lues') : plural(f.count, 'patient lu', 'patients lus')}` }),
-        bad.length
-          ? h('p', { class: 'warn-text', text: `${plural(bad.length, 'passage non reconnu', 'passages non reconnus')} (en-têtes, totaux… ou lignes manquées) :` })
-          : h('p', { text: 'Toutes les lignes ont été reconnues.' }),
-        bad.length ? h('pre', { text: bad.slice(0, 30).map((t) => (t.length > 300 ? t.slice(0, 300) + '…' : t)).join('\n') }) : null,
-        h('details', {}, [h('summary', { text: 'Début du texte lu' }), h('pre', { text: f.text.split('\n').slice(0, 25).join('\n') })]),
-      ]);
-    });
-  const totalBad = state.files.reduce((n, f) => n + (f.result ? f.result.suspicious.length : 0), 0);
-  const diag = h('details', { class: 'card fold no-print' }, [
-    h('summary', { text: `Contrôle de la lecture des PDF${totalBad ? ` (${nf.format(totalBad)} passage${totalBad > 1 ? 's' : ''} à regarder)` : ''}` }),
-    ...notes.map((t) => h('p', { text: t })),
-    ...fileNotes,
+  if (s.unidentified) notes.push(`${plural(s.unidentified, 'facture', 'factures')} sans nom ni NIR sur la période, non comptée(s) parmi les patients.`);
+  const review = h('details', { class: 'fold', id: 'review' }, [
+    h('summary', { text: `Rapprochements à vérifier (${nf.format(s.reviewRows.length)})` }),
+    h('div', {}, [
+      h('p', {
+        class: 'note',
+        text: 'Un patient est rattaché à la patientèle quand son NIR (13 premiers chiffres) y figure sous un nom compatible. Les cas ci-dessous ne concordent pas parfaitement.',
+      }),
+      h('label', { class: 'check' }, [byName, h('span', { text: 'Rattacher aussi par nom et prénom identiques quand le NIR diffère ou manque.' })]),
+      ...notes.map((t) => h('p', { class: 'note', text: t })),
+      s.reviewRows.length
+        ? h(
+            'div',
+            { class: 'scroll' },
+            table(
+              [{ label: 'Patient (facture)' }, { label: 'NIR' }, { label: 'Classé' }, { label: 'Remarque' }],
+              s.reviewRows.map((r) => [r.patient.name, fmtNir(r.patient.nir), r.patient.inList ? 'Patientèle' : 'Hors patientèle', r.patient.review.text]),
+              { cls: 'wrap-last' }
+            )
+          )
+        : null,
+    ]),
   ]);
+  review.open = state.reviewOpen || false;
+  review.addEventListener('toggle', () => (state.reviewOpen = review.open));
 
-  const invBad = state.files.filter((f) => f.type === 'factures').reduce((n, f) => n + f.result.suspicious.length, 0);
-  const alert = invBad
-    ? h('p', {
-        class: 'alert',
-        role: 'alert',
-        text: `Attention : ${plural(invBad, 'passage', 'passages')} du journal des factures n'${invBad > 1 ? 'ont' : 'a'} pas été reconnu${invBad > 1 ? 's' : ''}. Les chiffres peuvent être incomplets — voir « Contrôle de la lecture des PDF » en bas de page.`,
-      })
-    : null;
-  dash.replaceChildren(...[alert, hero, tiles, split, grid, years, list, review, diag].filter(Boolean));
+  done(hero, stats, chartGrid, years, list, review);
   charts.forEach((c) => c.mount());
 }
 
@@ -451,27 +495,28 @@ function exportCsv(s) {
 
 /* ---------- Événements ---------- */
 
-$('file').addEventListener('change', (e) => {
-  addFiles(e.target.files);
-  e.target.value = '';
-});
-const drop = $('drop');
-for (const ev of ['dragenter', 'dragover'])
-  drop.addEventListener(ev, (e) => {
-    e.preventDefault();
-    drop.classList.add('over');
+for (const zone of Object.keys(ZONES)) {
+  const box = $('zone-' + zone);
+  const input = $('file-' + zone);
+  input.addEventListener('change', () => {
+    addFiles(zone, input.files);
+    input.value = '';
   });
-for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, () => drop.classList.remove('over'));
-drop.addEventListener('drop', (e) => {
-  e.preventDefault();
-  addFiles(e.dataTransfer.files);
-});
-// Un PDF lâché à côté de la zone ne doit pas s'ouvrir dans l'onglet.
+  for (const ev of ['dragenter', 'dragover'])
+    box.addEventListener(ev, (e) => {
+      e.preventDefault();
+      box.classList.add('over');
+    });
+  box.addEventListener('dragleave', (e) => {
+    if (!box.contains(e.relatedTarget)) box.classList.remove('over');
+  });
+  box.addEventListener('drop', (e) => {
+    e.preventDefault();
+    box.classList.remove('over');
+    addFiles(zone, e.dataTransfer.files);
+  });
+}
+// Un PDF lâché à côté d'une zone ne doit pas s'ouvrir dans l'onglet.
 for (const ev of ['dragover', 'drop']) window.addEventListener(ev, (e) => e.preventDefault());
-
-$('pasteBtn').addEventListener('click', addPastedText);
-$('from').addEventListener('change', render);
-$('to').addEventListener('change', render);
-$('byName').addEventListener('change', () => refresh(false));
-$('printBtn').addEventListener('click', () => window.print());
 $('resetBtn').addEventListener('click', () => location.reload());
+renderZones();

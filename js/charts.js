@@ -198,15 +198,17 @@ export function segmentedBar(container, parts, format) {
   });
   for (const p of parts) {
     if (!p.value) continue;
-    const seg = h('div', { class: 'seg ' + p.cls, title: `${p.name} : ${format(p.value)} (${pct(p.value)} %)` });
+    const seg = h('div', { class: 'seg ' + p.cls });
     seg.style.flexGrow = String(p.value);
-    if (pct(p.value) >= 8) seg.appendChild(h('span', { text: pct(p.value) + ' %' }));
     bar.appendChild(seg);
   }
+  // Barre fine, sans texte : la légende porte les chiffres.
   const legend = h(
     'div',
     { class: 'legend' },
-    parts.map((p) => h('span', { class: 'legend-item' }, [h('i', { class: 'swatch ' + p.cls }), `${p.name} · ${format(p.value)}`]))
+    parts.map((p) =>
+      h('span', { class: 'legend-item' }, [h('i', { class: 'swatch ' + p.cls }), h('strong', { text: format(p.value) }), `${p.name} · ${pct(p.value)} %`])
+    )
   );
   container.replaceChildren(bar, legend);
 }

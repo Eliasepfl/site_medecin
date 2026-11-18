@@ -33,6 +33,24 @@ function sameFirstName(invoiceTokens, listTokens) {
   return invoiceTokens.length > 1 && listTokens.length > 1 && listTokens.slice(1).includes(invoiceTokens[0]);
 }
 
+/**
+ * La patientèle n'indique que le premier prénom, la facture les donne tous
+ * (« JAMES JOHNY SPECTER » / « SPECTER JAMES »). Sans NIR commun, on exige que
+ * tous les mots de la patientèle soient sur la facture ET que le premier prénom
+ * de la facture soit celui de la patientèle (« JEAN PIERRE DUPONT » ne doit pas
+ * être rattaché à « DUPONT PIERRE »).
+ */
+function firstNameAndSurname(invoiceTokens, listTokens) {
+  return listTokens.length >= 2 && listTokens.includes(invoiceTokens[0]) && listTokens.every((t) => invoiceTokens.includes(t));
+}
+
+/** Nom écrit d'un seul bloc sur la facture (« JAMESJOHNYSPECTER ») : prénom en tête, nom en fin. */
+function gluedName(invoiceTokens, listTokens) {
+  if (invoiceTokens.length !== 1 || listTokens.length < 2) return false;
+  const g = invoiceTokens[0];
+  return g.startsWith(listTokens[listTokens.length - 1]) && g.endsWith(listTokens.slice(0, -1).join(''));
+}
+
 class UnionFind {
   constructor(n) {
     this.p = Array.from({ length: n }, (_, i) => i);
@@ -133,14 +151,18 @@ export function buildModel(invoices, patientele, { matchByName = true } = {}) {
     for (const id of members) {
       const sameNir = id.nir ? listByNir.get(id.nir) || [] : [];
       const hit = sameNir.find(
-        (p) => !id.tokens.length || namesCompatible(id.tokens, p.tokens) || sameFirstName(id.tokens, p.tokens)
+        (p) => !id.tokens.length || namesCompatible(id.tokens, p.tokens) || sameFirstName(id.tokens, p.tokens) || gluedName(id.tokens, p.tokens)
       );
       if (hit) {
         match = 'nir';
         review = null;
         break;
       }
-      const exact = id.tokens.length >= 2 ? listByName.get(id.nameKey) : null;
+      let exact = id.tokens.length >= 2 ? listByName.get(id.nameKey) : null;
+      if (!exact && id.tokens.length >= 2) {
+        const same = (listByToken.get(id.tokens[0]) || []).filter((p) => firstNameAndSurname(id.tokens, p.tokens));
+        if (same.length) exact = same;
+      }
       if (exact && matchByName) {
         match = 'nom';
         review = {
