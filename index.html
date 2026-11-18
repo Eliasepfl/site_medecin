@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Le navigateur interdit lui-même toute connexion sortante (connect-src 'none') :
+       les fichiers ne peuvent pas quitter l'ordinateur. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; worker-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Flux de patients</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <main>
+    <header class="page-head">
+      <h1>Flux de patients hors patientèle</h1>
+      <p class="lead">Compte les patients distincts facturés sur une période qui ne figurent pas dans la patientèle médecin traitant.</p>
+      <p class="privacy">
+        <strong>Tout reste sur cet ordinateur.</strong>
+        Les PDF sont lus par le navigateur, rien n'est envoyé ni enregistré : pas de serveur, pas de cookie, pas de stockage.
+        Fermer ou recharger l'onglet efface tout.
+      </p>
+    </header>
+
+    <section class="card no-print" id="import">
+      <h2>1. Déposer les PDF</h2>
+      <p class="hint">Le journal des factures et la liste complète de patientèle médecin traitant (plusieurs fichiers possibles). Le type de chaque fichier est reconnu automatiquement.</p>
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept="application/pdf,.pdf" multiple>
+        <span class="drop-main">Déposer les fichiers ici</span>
+        <span class="drop-sub">ou cliquer pour les choisir</span>
+      </label>
+      <ul class="files" id="files"></ul>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <details class="paste">
+        <summary>Un PDF n'est pas lu correctement ? Coller son texte</summary>
+        <p class="hint">Ouvrir le PDF, tout sélectionner (Ctrl + A), copier (Ctrl + C), puis coller ici. À faire séparément pour chaque document.</p>
+        <textarea id="pasteText" rows="6" spellcheck="false" aria-label="Texte copié depuis le PDF"></textarea>
+        <button type="button" id="pasteBtn">Ajouter ce texte</button>
+      </details>
+    </section>
+
+    <section class="filters no-print" id="filters" hidden>
+      <div class="field">
+        <label for="from">Du</label>
+        <input type="date" id="from">
+      </div>
+      <div class="field">
+        <label for="to">Au</label>
+        <input type="date" id="to">
+      </div>
+      <div class="presets" id="presets" role="group" aria-label="Périodes prédéfinies"></div>
+      <label class="check">
+        <input type="checkbox" id="byName" checked>
+        <span>Rapprocher aussi par nom et prénom identiques quand le NIR diffère ou manque</span>
+      </label>
+      <div class="actions">
+        <button type="button" id="printBtn">Imprimer</button>
+        <button type="button" id="resetBtn">Tout effacer</button>
+      </div>
+    </section>
+
+    <div id="dash" hidden></div>
+  </main>
+  <noscript>Ce site a besoin de JavaScript pour lire les PDF dans le navigateur.</noscript>
+</body>
+</html>
