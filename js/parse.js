@@ -295,7 +295,7 @@
   }
 
   const KEEP = new Set(
-    'Date Libellé Patient Montant Dû Payé NIR FV NOM PRÉNOM ÂGE ENTRÉ(E) LE ALD RÉGIME OUI RG Page Total Nombre total de patients au :'.split(' ')
+    'Date Libellé Patient Montant Dû Payé NIR FV FP NOM PRÉNOM ÂGE ENTRÉ(E) LE ALD RÉGIME OUI RG Page Total Nombre total de patients au :'.split(' ')
   );
 
   /**

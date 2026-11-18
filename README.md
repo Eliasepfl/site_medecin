@@ -33,11 +33,15 @@ ne contient aucune donnée et peut être transmis pour faire corriger la lecture
 - Un NIR écrit à côté du nom du patient (`NOM : NIR`) sert aussi au rapprochement.
 - **Patientèle** : une ligne = nom prénom, âge, NIR (13 chiffres), date d'entrée, ALD, régime.
 - Les NIR sont comparés sur leurs 13 premiers chiffres (la clé de contrôle est ignorée).
-- Deux factures concernent le même patient si elles ont le même NIR et un nom compatible
-  (un même NIR peut couvrir plusieurs personnes d'une famille).
-- Un patient facturé est dans la patientèle si son NIR y figure avec un nom compatible
-  (ou le même prénom). Option cochée par défaut : nom et prénom identiques suffisent
-  quand le NIR diffère ou manque.
+- Les deux documents écrivent NOM puis PRÉNOM(S) : la facture donne tous les prénoms, la
+  patientèle le premier (simple ou composé). Tirets, apostrophes et accents sont ignorés.
+- Un patient facturé est dans la patientèle si son NIR y figure et que le nom de la patientèle
+  est le début du nom de la facture (`DUPONT JEAN` / `DUPONT JEAN PIERRE`), ou que le nom est
+  raccourci d'un côté mais suivi du même prénom (`ZOLA--ZIDANE XAVIER` / `ZOLA XAVIER LOUIS`).
+  `DUPONT PAUL JEAN` avec le NIR de `DUPONT JEAN` est une autre personne (même famille).
+- Même NIR, même prénom mais nom entièrement différent : rattaché, et signalé à vérifier.
+- Option cochée par défaut : sans NIR commun, le nom de la patientèle en début du nom de la
+  facture suffit. Option décochée par défaut : se fier au NIR seul.
 - Les cas douteux sont listés dans « Rapprochements à vérifier », et les passages de PDF
   non reconnus dans « Un PDF est mal lu ? ».
 

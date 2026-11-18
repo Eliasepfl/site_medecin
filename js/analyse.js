@@ -30,29 +30,29 @@
   }
 
   /**
-   * Facture : "PRÉNOM(S) NOM" · patientèle : "NOM PRÉNOM(S)".
-   * Avec un même NIR, un prénom identique suffit (nom d'usage / nom de naissance).
+   * Les deux documents écrivent NOM puis PRÉNOM(S) ; la facture donne tous les prénoms,
+   * la patientèle le premier (simple ou composé). « DUPONT JEAN » est donc le début de
+   * « DUPONT JEAN PIERRE MARCEL », mais pas de « DUPONT PAUL JEAN » (un autre membre
+   * de la famille). Les tirets ont déjà été retirés des deux côtés.
    */
-  function sameFirstName(invoiceTokens, listTokens) {
-    return invoiceTokens.length > 1 && listTokens.length > 1 && listTokens.slice(1).includes(invoiceTokens[0]);
+  function isPrefix(a, b) {
+    const [s, l] = a.length <= b.length ? [a, b] : [b, a];
+    return s.length >= 2 && s.every((t, i) => l[i] === t);
   }
 
-  /**
-   * La patientèle n'indique que le premier prénom, la facture les donne tous
-   * (« JAMES JOHNY SPECTER » / « SPECTER JAMES »). Sans NIR commun, on exige que
-   * tous les mots de la patientèle soient sur la facture ET que le premier prénom
-   * de la facture soit celui de la patientèle (« JEAN PIERRE DUPONT » ne doit pas
-   * être rattaché à « DUPONT PIERRE »).
-   */
-  function firstNameAndSurname(invoiceTokens, listTokens) {
-    return listTokens.length >= 2 && listTokens.includes(invoiceTokens[0]) && listTokens.every((t) => invoiceTokens.includes(t));
-  }
-
-  /** Nom écrit d'un seul bloc sur la facture (« JAMESJOHNYSPECTER ») : prénom en tête, nom en fin. */
-  function gluedName(invoiceTokens, listTokens) {
-    if (invoiceTokens.length !== 1 || listTokens.length < 2) return false;
-    const g = invoiceTokens[0];
-    return g.startsWith(listTokens[listTokens.length - 1]) && g.endsWith(listTokens.slice(0, -1).join(''));
+  /** Même NIR des deux côtés : est-ce la même personne ? 'sur', 'probable' ou null. */
+  function samePersonSameNir(inv, list) {
+    if (!inv.length || isPrefix(inv, list)) return 'sur';
+    if (list.length < 2) return null;
+    const surname = list.slice(0, -1);
+    const first = list[list.length - 1];
+    // Nom raccourci d'un côté (« ZOLA--ZIDANE XAVIER » / « ZOLA XAVIER LOUIS ») : le premier
+    // mot de la facture hors du nom doit être le prénom inscrit dans la patientèle.
+    const rest = inv.filter((t) => !surname.includes(t));
+    if (rest.length < inv.length && rest[0] === first) return 'sur';
+    // Nom entièrement différent (nom d'usage / de naissance) mais même prénom.
+    if (inv[0] !== list[0] && inv.slice(1).includes(first)) return 'probable';
+    return null;
   }
 
   class UnionFind {
@@ -143,7 +143,7 @@
     for (const group of groupBy(idList, (id) => id.nir).values())
       for (let a = 0; a < group.length; a++)
         for (let b = a + 1; b < group.length; b++)
-          if (nirOnly || namesCompatible(group[a].tokens, group[b].tokens)) uf.union(group[a].i, group[b].i);
+          if (nirOnly || group[a].nameKey === group[b].nameKey || isPrefix(group[a].tokens, group[b].tokens)) uf.union(group[a].i, group[b].i);
     if (matchByName)
       for (const group of groupBy(idList, (id) => (id.tokens.length >= 2 ? id.nameKey : '')).values())
         for (let a = 1; a < group.length; a++) uf.union(group[0].i, group[a].i);
@@ -156,17 +156,26 @@
       for (const id of members) {
         // NIR de la colonne NIR, puis NIR éventuellement écrit à côté du nom du patient.
         const sameNir = [id.nir, ...id.alts].filter(Boolean).flatMap((n) => listByNir.get(n) || []);
-        const hit = sameNir.find(
-          (p) => nirOnly || !id.tokens.length || namesCompatible(id.tokens, p.tokens) || sameFirstName(id.tokens, p.tokens) || gluedName(id.tokens, p.tokens)
-        );
-        if (hit) {
+        const verdicts = sameNir.map((p) => (nirOnly ? 'sur' : samePersonSameNir(id.tokens, p.tokens)));
+        if (verdicts.includes('sur')) {
           match = 'nir';
           review = null;
           break;
         }
+        if (verdicts.includes('probable')) {
+          match = 'nir';
+          review = {
+            kind: 'nom-different',
+            text: `Même NIR et même prénom que « ${sameNir[verdicts.indexOf('probable')].name} » dans la patientèle, nom différent.`,
+          };
+          continue;
+        }
+        if (match === 'nir') continue;
+        // Sans NIR commun : même nom et prénom, ou nom + premier prénom de la patientèle
+        // en tête du nom de la facture.
         let exact = id.tokens.length >= 2 ? listByName.get(id.nameKey) : null;
         if (!exact && id.tokens.length >= 2) {
-          const same = (listByToken.get(id.tokens[0]) || []).filter((p) => firstNameAndSurname(id.tokens, p.tokens));
+          const same = (listByToken.get(id.tokens[0]) || []).filter((p) => isPrefix(p.tokens, id.tokens));
           if (same.length) exact = same;
         }
         if (exact && matchByName) {
