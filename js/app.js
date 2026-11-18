@@ -349,7 +349,7 @@
       stat('Factures', nf.format(s.all.invoices), `dont ${nf.format(s.hors.invoices)} hors patientèle`),
       stat('Patients facturés', nf.format(s.all.patients), `${(s.all.invoices / s.all.patients).toFixed(1).replace('.', ',')} factures par patient`),
       stat('Patientèle vue', `${pct(s.mt.patients, s.listSize)} %`, `${nf.format(s.mt.patients)} sur ${nf.format(s.listSize)} inscrits`),
-      stat('Montant facturé', eur0.format(s.all.montant), `dont ${eur0.format(s.hors.montant)} hors patientèle` + (s.noAmount ? ` · ${plural(s.noAmount, 'facture sans montant', 'factures sans montant')}` : '')),
+      stat('Montant facturé', eur0.format(s.all.montant), `dont ${eur0.format(s.hors.montant)} hors patientèle` + (s.noAmount ? ` · ${plural(s.noAmount, 'facture au montant non lu', 'factures au montant non lu')}` : '')),
     ]);
 
     /* Graphiques */

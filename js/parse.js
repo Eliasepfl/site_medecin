@@ -204,17 +204,41 @@
 
     const records = [];
     const suspicious = [];
-    f.forEach((cur, i) => {
+    const contexts = [];
+    const around = (i) =>
+      [i - 1, i, i + 1]
+        .filter((k) => k >= 0 && k < segs.length)
+        .map((k) => `${flat.slice(dates[k].start, dates[k].end)} ${segs[k].trim()}`)
+        .join('\n');
+    for (let i = 0; i < f.length; i++) {
+      const cur = f[i];
       const prev = i ? f[i - 1] : pre;
-      const amounts = (shifted ? prev.amounts : cur.amounts).slice();
-      const nir = !shifted ? cur.nir : cur.nirFirst ? cur.nir : prev.nirFirst ? '' : prev.nir;
-      // Une ligne sans aucun montant reste une facture si elle porte un code (FV, FD, FP…)
-      // et un nom : elle compte pour le patient, mais son montant reste inconnu.
-      const empty = !amounts.length && !shifted && cur.code && cur.patient;
-      if (empty) amounts.push(null); // montant absent du journal : inconnu, pas zéro
+      const next = f[i + 1];
+      let amounts = (shifted ? prev.amounts : cur.amounts).slice();
+      let nir = !shifted ? cur.nir : cur.nirFirst ? cur.nir : prev.nirFirst ? '' : prev.nir;
+      let nirAlt = shifted ? '' : cur.nirAlt;
+      // Une date écrite dans le nom du patient (date de naissance, par exemple) coupe la
+      // ligne en deux : le début porte le code et le nom, la suite seulement les montants
+      // et le NIR. On recolle les deux moitiés sous la première date.
+      const split = !shifted && !amounts.length && !!cur.code && !!cur.patient && !!next && next.amounts.length > 0 && !next.code && !next.number;
+      if (split) {
+        amounts = next.amounts.slice();
+        nir = nir || next.nir;
+        nirAlt = nirAlt || next.nirAlt;
+      }
+      // Code et nom mais aucun montant trouvé : la ligne compte pour le patient, son
+      // montant n'a pas pu être lu (il n'est pas nul), et elle est signalée.
+      const noAmount = !shifted && !amounts.length && !!cur.code && !!cur.patient;
+      if (noAmount) {
+        amounts.push(null);
+        contexts.push(around(i));
+      }
       if (!amounts.length || (!cur.patient && !nir)) {
-        if (!shifted && (cur.amounts.length || cur.nir || cur.number)) suspicious.push(`${flat.slice(dates[i].start, dates[i].end)} ${segs[i].trim()}`);
-        return;
+        if (!shifted && (cur.amounts.length || cur.nir || cur.number)) {
+          suspicious.push(`${flat.slice(dates[i].start, dates[i].end)} ${segs[i].trim()}`);
+          contexts.push(around(i));
+        }
+        continue;
       }
       records.push({
         date: dates[i].iso,
@@ -227,14 +251,62 @@
         du: amounts.length === 3 ? amounts[1] : null,
         paye: amounts.length === 3 ? amounts[2] : null,
         nir13: nir,
-        nirAlt: shifted ? '' : cur.nirAlt,
+        nirAlt,
       });
-    });
+      if (split) i++;
+    }
     if (!shifted && pre.amounts.length) suspicious.push(flat.slice(0, dates.length ? dates[0].start : flat.length).trim());
-    return { records, suspicious, quality: nirConsistency(records), shifted };
+    const unread = records.filter((r) => r.montant == null).length;
+    return { records, suspicious, contexts, unread, quality: nirConsistency(records), shifted };
   }
 
   const RE_LIST_HEADER = /^(Nombre total|Les données|celles des|LISTE COMPL|NOM PR.NOM|Page\b)/i;
+
+  const RE_NIR_ONLY = new RegExp('^' + NIR13 + '(?: ?\\d{2})?$');
+  // Rangée privée de son NIR : un nom en capitales, puis l'âge ou la date d'entrée.
+  const isRowWithoutNir = (l) => /^[^\da-zà-ÿ]*[A-ZÀ-Ý][^\da-zà-ÿ]*\s\d/.test(l) && !RE_LIST_HEADER.test(l) && !RE_PATIENT_LINE.test(l);
+  const isNameOnly = (l) => !!l && !/\d/.test(l) && /[A-ZÀ-Ý]/.test(l) && !/[a-zà-ÿ]/.test(l) && !RE_LIST_HEADER.test(l);
+
+  /** « NOM 45 01/03/2017 RG » + NIR -> « NOM 45 NIR 01/03/2017 RG » */
+  function insertNir(row, nir) {
+    const m = /^(\D*?)\s*(\d{1,3})(?:\s+(.*))?$/.exec(row);
+    if (m) return `${m[1]} ${m[2]} ${nir} ${m[3] || ''}`.trim();
+    const cut = row.search(/\d/);
+    return `${row.slice(0, cut)} ${nir} ${row.slice(cut)}`.trim();
+  }
+
+  /**
+   * Dans certains PDF le NIR est écrit légèrement plus haut (ou plus bas) que le reste de
+   * sa rangée et se retrouve seul sur une ligne. On le remet dans la rangée voisine ; le
+   * sens (NIR avant ou après) est celui de la première rangée du document.
+   */
+  function joinSplitRows(lines) {
+    lines = lines.filter(Boolean);
+    const first = lines.find((l) => RE_NIR_ONLY.test(l) || isRowWithoutNir(l));
+    if (!first) return lines;
+    const nirBefore = RE_NIR_ONLY.test(first);
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (nirBefore && RE_NIR_ONLY.test(l)) {
+        // Jusqu'à deux lignes de nom seules (nom très long) entre le NIR et sa rangée.
+        let j = i + 1;
+        const names = [];
+        while (j < lines.length && names.length < 2 && isNameOnly(lines[j])) names.push(lines[j++]);
+        if (j < lines.length && isRowWithoutNir(lines[j])) {
+          out.push(insertNir((names.join(' ') + ' ' + lines[j]).trim(), l));
+          i = j;
+          continue;
+        }
+      } else if (!nirBefore && isRowWithoutNir(l) && i + 1 < lines.length && RE_NIR_ONLY.test(lines[i + 1])) {
+        out.push(insertNir(l, lines[i + 1]));
+        i++;
+        continue;
+      }
+      out.push(l);
+    }
+    return out;
+  }
 
   /**
    * Liste de patientèle : une ligne de tableau par patient (nom, âge, NIR, puis date
@@ -242,7 +314,7 @@
    * trop long, il se retrouve seul sur la ligne du dessus ou du dessous.
    */
   function parsePatientele(text) {
-    const lines = clean(text).split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim());
+    const lines = joinSplitRows(clean(text).split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()));
     const isNameLine = (l) => !!l && !/\d/.test(l) && /[A-ZÀ-Ý]/.test(l) && !/[a-zà-ÿ]/.test(l) && !RE_LIST_HEADER.test(l);
     const records = [];
     const suspicious = [];
@@ -304,7 +376,9 @@
         regime: tail.replace(new RegExp(DATE), ' ').replace(/OUI|NON/, ' ').replace(/\s+/g, ' ').trim(),
       });
     }
-    return { records, suspicious, contexts, declaredTotal, declaredDate, quality: 1 };
+    // Une lecture qui retrouve les noms vaut mieux qu'une lecture qui n'a que les NIR.
+    const named = records.filter((r) => r.name).length;
+    return { records, suspicious, contexts, declaredTotal, declaredDate, quality: records.length ? named / records.length : 1 };
   }
 
   /**
@@ -379,7 +453,7 @@
       const result = PARSERS[type](text);
       const score = result.records.length * (0.5 + 0.5 * result.quality);
       // À score égal, la lecture qui laisse le moins de passages non reconnus.
-      if (!top || score > top.score || (score === top.score && result.suspicious.length < top.result.suspicious.length)) top = { result, score, text };
+      if (!top || score > top.score || (score === top.score && result.suspicious.length + (result.unread || 0) < top.result.suspicious.length + (top.result.unread || 0))) top = { result, score, text };
     }
     return top;
   }
