@@ -79,18 +79,23 @@
    * suivi d'un code de deux lettres). On cherche le mot court en majuscules placé
    * entre deux suites de mots identiques.
    */
-  function splitOnRepeat(text) {
+  function splitOnRepeat(text, knownCodes) {
     const t = text.replace(RE_MARKS, ' ').split(/\s+/).filter((x) => isWord(x) || RE_JOINER.test(x));
+    // Le libellé peut être en capitales et la colonne Patient en casse mixte.
+    const fold = (words) => words.join(' ').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
     for (let i = 1; 2 * i + 1 <= t.length; i++) {
       if (!/^[A-Z]{1,5}$/.test(t[i])) continue;
-      const name = t.slice(0, i).join(' ');
-      if (name === t.slice(i + 1, 2 * i + 1).join(' ')) return { code: t[i], name };
+      if (fold(t.slice(0, i)) === fold(t.slice(i + 1, 2 * i + 1))) return { code: t[i], libelle: t.slice(0, i).join(' '), name: t.slice(i + 1, 2 * i + 1).join(' ') };
     }
+    // Pas de répétition exacte : on coupe sur un code déjà rencontré ailleurs dans le journal.
+    if (knownCodes)
+      for (let i = 1; i < t.length - 1; i++)
+        if (knownCodes.has(t[i])) return { code: t[i], libelle: t.slice(0, i).join(' '), name: cleanName(t.slice(i + 1).join(' '), t.slice(0, i).join(' ')) };
     return null;
   }
 
   /** Extrait d'un bloc (texte entre deux dates) : NIR, numéro de facture, montants, noms. */
-  function fields(segment) {
+  function fields(segment, knownCodes) {
     let w = ' ' + segment + ' ';
     let nirA, nirB, num, m;
     [w, nirA] = take(RE_NIR, w, M_NIR);
@@ -126,15 +131,17 @@
       const chunk = w.slice(iNum + 1).split(RE_MARKS).find((c) => /[A-Za-zÀ-ÿ]/.test(c)) || '';
       patient = cleanName(chunk, libelleName) || libelleName;
     } else {
-      const rep = splitOnRepeat(w);
+      const rep = splitOnRepeat(w, knownCodes);
       if (rep) {
         code = rep.code;
-        libelleName = patient = rep.name;
+        libelleName = rep.libelle;
+        patient = rep.name;
       } else {
         patient = cleanName(w.split(RE_MARKS).find((c) => /[A-Za-zÀ-ÿ]/.test(c)) || '');
       }
     }
     return {
+      segment,
       nir: main ? nir13(main[2]) : '',
       nirAlt: alt ? nir13(alt[2]) : '',
       nirFirst: iMain >= 0 && (iAmt < 0 || iMain < iAmt),
@@ -184,19 +191,28 @@
     }
     const pre = fields(flat.slice(0, dates.length ? dates[0].start : 0));
     const segs = dates.map((d, i) => flat.slice(d.end, i + 1 < dates.length ? dates[i + 1].start : flat.length));
-    const f = segs.map(fields);
+    let f = segs.map((s) => fields(s));
+    // Second passage pour les lignes sans code reconnu, avec les codes fréquents du journal.
+    const codeCount = new Map();
+    for (const x of f) if (x.code) codeCount.set(x.code, (codeCount.get(x.code) || 0) + 1);
+    const known = new Set([...codeCount].filter(([c, n]) => n >= 5 && /^[A-Z]{2,3}$/.test(c)).map(([c]) => c));
+    if (known.size) f = f.map((x) => (x.code || !x.patient ? x : fields(x.segment, known)));
 
     // Montants lus une ligne trop tôt (ils précèdent la date de leur facture) : le texte
-    // commence par des montants sans nom et la dernière date a un nom sans montant.
+    // commence par des montants (avant toute date) et la dernière date a un nom sans montant.
     const last = f[f.length - 1];
-    const shifted = f.length > 1 && pre.amounts.length >= 2 && !pre.patient && !last.amounts.length && !!last.patient;
+    const shifted = f.length > 1 && pre.amounts.length >= 2 && !last.amounts.length && !!last.patient;
 
     const records = [];
     const suspicious = [];
     f.forEach((cur, i) => {
       const prev = i ? f[i - 1] : pre;
-      const amounts = shifted ? prev.amounts : cur.amounts;
+      const amounts = (shifted ? prev.amounts : cur.amounts).slice();
       const nir = !shifted ? cur.nir : cur.nirFirst ? cur.nir : prev.nirFirst ? '' : prev.nir;
+      // Une ligne sans aucun montant reste une facture si elle porte un code (FV, FD, FP…)
+      // et un nom : elle compte pour le patient, avec un montant nul.
+      const empty = !amounts.length && !shifted && cur.code && cur.patient;
+      if (empty) amounts.push(0);
       if (!amounts.length || (!cur.patient && !nir)) {
         if (!shifted && (cur.amounts.length || cur.nir || cur.number)) suspicious.push(`${flat.slice(dates[i].start, dates[i].end)} ${segs[i].trim()}`);
         return;
@@ -295,7 +311,7 @@
   }
 
   const KEEP = new Set(
-    'Date Libellé Patient Montant Dû Payé NIR FV FP NOM PRÉNOM ÂGE ENTRÉ(E) LE ALD RÉGIME OUI RG Page Total Nombre total de patients au :'.split(' ')
+    'Date Libellé Patient Montant Dû Payé NIR FV FP FD NOM PRÉNOM ÂGE ENTRÉ(E) LE ALD RÉGIME OUI RG Page Total Nombre total de patients au :'.split(' ')
   );
 
   /**
@@ -322,7 +338,8 @@
     for (const text of texts) {
       const result = PARSERS[type](text);
       const score = result.records.length * (0.5 + 0.5 * result.quality);
-      if (!top || score > top.score) top = { result, score, text };
+      // À score égal, la lecture qui laisse le moins de passages non reconnus.
+      if (!top || score > top.score || (score === top.score && result.suspicious.length < top.result.suspicious.length)) top = { result, score, text };
     }
     return top;
   }
