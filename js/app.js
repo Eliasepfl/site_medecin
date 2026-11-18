@@ -19,7 +19,7 @@
     patientele: { one: 'patient', many: 'patients', none: 'Aucun patient reconnu dans ce fichier.', looksLike: 'un journal de factures' },
   };
 
-  const state = { files: [], model: null, from: '', to: '', presets: [], byName: true, nirOnly: false, cleanups: [], showAll: false, search: '' };
+  const state = { files: [], model: null, from: '', to: '', presets: [], byName: true, nirOnly: false, codes: [], codesOff: new Set(), cleanups: [], showAll: false, search: '' };
 
   const nf = new Intl.NumberFormat('fr-FR');
   const eur0 = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
@@ -202,7 +202,13 @@
 
   function refresh(resetPeriod) {
     const ok = (zone) => state.files.filter((f) => f.zone === zone && f.status === 'ok').flatMap((f) => f.result.records);
-    const invoices = ok('factures');
+    const lines = ok('factures');
+    // Types de ligne du journal (FV…), du plus fréquent au moins fréquent.
+    const counts = new Map();
+    for (const l of lines) counts.set(l.code, (counts.get(l.code) || 0) + 1);
+    state.codes = [...counts].sort((a, b) => b[1] - a[1]);
+    for (const c of [...state.codesOff]) if (!counts.has(c)) state.codesOff.delete(c);
+    const invoices = lines.filter((l) => !state.codesOff.has(l.code));
     const patientele = ok('patientele');
     const busy = state.files.some((f) => f.status === 'reading');
 
@@ -267,10 +273,27 @@
       });
       return b;
     });
+    const codes =
+      state.codes.length > 1
+        ? h('div', { class: 'codes', role: 'group', 'aria-label': 'Types de ligne comptés' }, [
+            h('span', { text: 'Lignes comptées' }),
+            ...state.codes.slice(0, 8).map(([code, n], i) => {
+              const box = h('input', { type: 'checkbox', id: 'code-' + i });
+              box.checked = !state.codesOff.has(code);
+              box.addEventListener('change', () => {
+                if (box.checked) state.codesOff.delete(code);
+                else if (state.codes.filter(([c]) => !state.codesOff.has(c)).length > 1) state.codesOff.add(code);
+                refresh(false);
+              });
+              return h('label', {}, [box, `${code || 'sans code'} (${nf.format(n)})`]);
+            }),
+          ])
+        : null;
     return h('div', { class: 'period no-print' }, [
       input('from', 'Du', state.from, 'from'),
       input('to', 'au', state.to, 'to'),
       h('div', { class: 'presets', role: 'group', 'aria-label': 'Périodes' }, presets),
+      codes,
     ]);
   }
 

@@ -144,6 +144,8 @@ pre { white-space: pre; overflow: auto; max-height: 260px; }
 .period { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
 .period label { font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
 .presets { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-left: auto; }
+.codes { display: flex; flex-wrap: wrap; gap: 4px 16px; width: 100%; font-size: 13px; color: var(--ink-2); }
+.codes input { accent-color: var(--accent); margin: 0; }
 button.preset { color: var(--muted); padding-bottom: 2px; }
 button.preset:hover { color: var(--ink); }
 button.preset[aria-pressed="true"] { color: var(--ink); font-weight: 500; box-shadow: 0 2px 0 var(--ink); border-radius: 0; }

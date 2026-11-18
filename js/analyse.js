@@ -130,7 +130,8 @@
         continue;
       }
       const k = inv.nir13 + '|' + tokens.join(' ');
-      if (!ids.has(k)) ids.set(k, { nir: inv.nir13, tokens, nameKey: nameKey(tokens), label: inv.patient, invoices: [] });
+      if (!ids.has(k)) ids.set(k, { nir: inv.nir13, alts: new Set(), tokens, nameKey: nameKey(tokens), label: inv.patient, invoices: [] });
+      if (inv.nirAlt) ids.get(k).alts.add(inv.nirAlt);
       ids.get(k).invoices.push(inv);
     }
     const idList = [...ids.values()];
@@ -153,7 +154,8 @@
       let match = null; // 'nir' | 'nom'
       let review = null;
       for (const id of members) {
-        const sameNir = id.nir ? listByNir.get(id.nir) || [] : [];
+        // NIR de la colonne NIR, puis NIR éventuellement écrit à côté du nom du patient.
+        const sameNir = [id.nir, ...id.alts].filter(Boolean).flatMap((n) => listByNir.get(n) || []);
         const hit = sameNir.find(
           (p) => nirOnly || !id.tokens.length || namesCompatible(id.tokens, p.tokens) || sameFirstName(id.tokens, p.tokens) || gluedName(id.tokens, p.tokens)
         );

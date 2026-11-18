@@ -25,7 +25,10 @@
   const M_NIR = '\u0001';
   const M_NUM = '\u0002';
   const M_AMT = '\u0003';
-  const RE_MARKS = /[\u0001-\u0003]/g;
+  const M_NIR2 = '\u0004';
+  const RE_MARKS = /[\u0001-\u0004]/g;
+  const RE_JOINER = /^[-–'’.]+$/;
+  const isWord = (t) => /[A-Za-zÀ-ÿ]/.test(t) && !/\d/.test(t);
 
   /** "14/11/2026" -> "2026-11-14" (ou null si la date n'existe pas). */
   function toIso(fr) {
@@ -53,32 +56,44 @@
     return [s.slice(0, start) + ' ' + mark + ' ' + s.slice(m.index + m[0].length), m];
   }
 
-  const hasLower = (t) => /[a-zà-öø-ÿ]/.test(t);
-
-  /** Garde le nom en tête d'un fragment, sans les restes de pied de page ou de ligne voisine. */
+  /**
+   * Garde le nom en tête d'un fragment : les mots jusqu'au premier élément qui
+   * n'en est pas un (chiffre, « : », repère). Un tiret ou une apostrophe isolé
+   * fait partie du nom (« DUPONT - DE LA TOUR »).
+   */
   function cleanName(raw, ref) {
     const words = [];
-    let upper = false;
-    for (const t of raw.replace(RE_MARKS, ' ').split(/\s+/).filter(Boolean)) {
-      const isWord = /[A-Za-zÀ-ÿ]/.test(t) && !/\d/.test(t);
-      // Un tiret ou une apostrophe isolé fait partie du nom (« DUPONT - DE LA TOUR »).
-      const isJoiner = /^[-–'’.]+$/.test(t);
+    for (const t of raw.split(/\s+/).filter(Boolean)) {
       if (!words.length) {
-        if (!isWord) continue;
-        upper = !hasLower(t);
-      } else if (!isJoiner && (!isWord || (upper && hasLower(t)))) break;
+        if (!isWord(t)) continue;
+      } else if (!isWord(t) && !RE_JOINER.test(t)) break;
       words.push(t);
     }
-    while (words.length && /^[-–'’.]+$/.test(words[words.length - 1])) words.pop();
+    while (words.length && RE_JOINER.test(words[words.length - 1])) words.pop();
     const name = words.join(' ');
     return ref && name.startsWith(ref + ' ') ? ref : name;
+  }
+
+  /**
+   * Libellé sans numéro : « NOM CODE NOM » (le libellé reprend le nom du patient,
+   * suivi d'un code de deux lettres). On cherche le mot court en majuscules placé
+   * entre deux suites de mots identiques.
+   */
+  function splitOnRepeat(text) {
+    const t = text.replace(RE_MARKS, ' ').split(/\s+/).filter((x) => isWord(x) || RE_JOINER.test(x));
+    for (let i = 1; 2 * i + 1 <= t.length; i++) {
+      if (!/^[A-Z]{1,5}$/.test(t[i])) continue;
+      const name = t.slice(0, i).join(' ');
+      if (name === t.slice(i + 1, 2 * i + 1).join(' ')) return { code: t[i], name };
+    }
+    return null;
   }
 
   /** Extrait d'un bloc (texte entre deux dates) : NIR, numéro de facture, montants, noms. */
   function fields(segment) {
     let w = ' ' + segment + ' ';
-    let nir, num, m;
-    [w, nir] = take(RE_NIR, w, M_NIR);
+    let nirA, nirB, num, m;
+    [w, nirA] = take(RE_NIR, w, M_NIR);
     [w, num] = take(RE_NUMBER, w, M_NUM);
     const amounts = [];
     while (amounts.length < 3) {
@@ -86,18 +101,44 @@
       if (!m) break;
       amounts.push(toNumber(m[2]));
     }
-    // NIR collé aux montants (« 3,001 84 05… ») : visible seulement une fois les montants retirés.
-    if (!nir) [w, nir] = take(RE_NIR, w, M_NIR);
+    // Second passage : NIR collé aux montants (« 3,001 84 05… »), ou second NIR du bloc
+    // (un NIR dans la colonne Patient, « NOM : NIR », en plus de la colonne NIR).
+    [w, nirB] = take(RE_NIR, w, nirA ? M_NIR2 : M_NIR);
+    if (!nirA) [nirA, nirB] = [nirB, null];
 
-    const iNum = w.indexOf(M_NUM);
-    const libelleName = iNum >= 0 ? cleanName(w.slice(0, iNum)) : '';
-    const patient = cleanName(iNum >= 0 ? w.slice(iNum + 1) : w, libelleName) || libelleName;
-    const iNir = w.indexOf(M_NIR);
+    // Le NIR de la colonne NIR est celui qui suit les montants ; l'autre est gardé à part.
     const iAmt = w.indexOf(M_AMT);
+    const iLastAmt = w.lastIndexOf(M_AMT);
+    const iA = w.indexOf(M_NIR);
+    const iB = w.indexOf(M_NIR2);
+    let main = nirA;
+    let alt = nirB;
+    let iMain = iA;
+    if (nirB && iLastAmt >= 0 && iB > iLastAmt && iA < iLastAmt) [main, alt, iMain] = [nirB, nirA, iB];
+
+    let code = num ? num[2] : '';
+    let libelleName = '';
+    let patient = '';
+    const iNum = w.indexOf(M_NUM);
+    if (iNum >= 0) {
+      libelleName = cleanName(w.slice(0, iNum).replace(RE_MARKS, ' '));
+      // Le patient est le premier morceau de texte après le numéro (avant montants et NIR).
+      const chunk = w.slice(iNum + 1).split(RE_MARKS).find((c) => /[A-Za-zÀ-ÿ]/.test(c)) || '';
+      patient = cleanName(chunk, libelleName) || libelleName;
+    } else {
+      const rep = splitOnRepeat(w);
+      if (rep) {
+        code = rep.code;
+        libelleName = patient = rep.name;
+      } else {
+        patient = cleanName(w.split(RE_MARKS).find((c) => /[A-Za-zÀ-ÿ]/.test(c)) || '');
+      }
+    }
     return {
-      nir: nir ? nir13(nir[2]) : '',
-      nirFirst: iNir >= 0 && (iAmt < 0 || iNir < iAmt),
-      code: num ? num[2] : '',
+      nir: main ? nir13(main[2]) : '',
+      nirAlt: alt ? nir13(alt[2]) : '',
+      nirFirst: iMain >= 0 && (iAmt < 0 || iMain < iAmt),
+      code,
       number: num ? num[3] : '',
       amounts,
       libelleName,
@@ -127,9 +168,10 @@
   }
 
   /**
-   * Journal des factures. Le texte est découpé à chaque date : tout ce qui se trouve
-   * entre deux dates appartient à une facture, quel que soit l'ordre des colonnes et
-   * que la facture tienne sur une ou plusieurs lignes.
+   * Journal des factures. Le texte est un flux continu, replié en lignes : il est
+   * découpé à chaque date, et tout ce qui se trouve entre deux dates appartient à
+   * une même ligne du journal. Une ligne porte un à trois montants (les colonnes
+   * Dû et Payé peuvent être vides).
    */
   function parseInvoices(text) {
     const flat = clean(text).replace(/\s+/g, ' ').trim();
@@ -144,9 +186,10 @@
     const segs = dates.map((d, i) => flat.slice(d.end, i + 1 < dates.length ? dates[i + 1].start : flat.length));
     const f = segs.map(fields);
 
-    // Montants lus une ligne trop tôt (ils précèdent la date de leur facture) :
-    // le texte commence par des montants et la dernière date n'en a pas.
-    const shifted = f.length > 1 && pre.amounts.length >= 3 && f[f.length - 1].amounts.length < 3;
+    // Montants lus une ligne trop tôt (ils précèdent la date de leur facture) : le texte
+    // commence par des montants sans nom et la dernière date a un nom sans montant.
+    const last = f[f.length - 1];
+    const shifted = f.length > 1 && pre.amounts.length >= 2 && !pre.patient && !last.amounts.length && !!last.patient;
 
     const records = [];
     const suspicious = [];
@@ -154,9 +197,8 @@
       const prev = i ? f[i - 1] : pre;
       const amounts = shifted ? prev.amounts : cur.amounts;
       const nir = !shifted ? cur.nir : cur.nirFirst ? cur.nir : prev.nirFirst ? '' : prev.nir;
-      if (amounts.length < 3) {
-        const s = segs[i];
-        if (!shifted && (cur.amounts.length || cur.nir || cur.number)) suspicious.push(`${flat.slice(dates[i].start, dates[i].end)} ${s.trim()}`);
+      if (!amounts.length || (!cur.patient && !nir)) {
+        if (!shifted && (cur.amounts.length || cur.nir || cur.number)) suspicious.push(`${flat.slice(dates[i].start, dates[i].end)} ${segs[i].trim()}`);
         return;
       }
       records.push({
@@ -166,9 +208,11 @@
         libelleName: cur.libelleName,
         patient: cur.patient,
         montant: amounts[0],
-        du: amounts[1],
-        paye: amounts[2],
+        // Avec deux montants seulement, on ne sait pas lequel de Dû ou Payé est vide.
+        du: amounts.length === 3 ? amounts[1] : null,
+        paye: amounts.length === 3 ? amounts[2] : null,
         nir13: nir,
+        nirAlt: shifted ? '' : cur.nirAlt,
       });
     });
     if (!shifted && pre.amounts.length) suspicious.push(flat.slice(0, dates.length ? dates[0].start : flat.length).trim());
@@ -258,7 +302,7 @@
    * Squelette du texte sans aucune donnée : chaque lettre devient A (ou a), chaque
    * chiffre 9. Sert à décrire la mise en page d'un PDF sans rien révéler.
    */
-  function anonymize(text, maxLines = 30) {
+  function anonymize(text, maxLines = 40, extra) {
     return clean(text)
       .split(/\r?\n/)
       .filter((l) => l.trim())
@@ -266,7 +310,7 @@
       .map((l) =>
         l
           .slice(0, 220)
-          .replace(/\S+/g, (t) => (KEEP.has(t) ? t : t.replace(/[A-ZÀ-Ý]/g, 'A').replace(/[a-zà-ÿ]/g, 'a').replace(/\d/g, '9')))
+          .replace(/\S+/g, (t) => (KEEP.has(t) || (extra && extra.has(t)) ? t : t.replace(/[A-ZÀ-Ý]/g, 'A').replace(/[a-zà-ÿ]/g, 'a').replace(/\d/g, '9')))
       )
       .join('\n');
   }
@@ -289,12 +333,24 @@
     const texts = variants.map((v) => v.text);
     const top = best(type, texts);
     const other = best(type === 'factures' ? 'patientele' : 'factures', texts);
+    // Les codes de ligne (FV…) ne sont pas des données personnelles : on les laisse lisibles
+    // dans la structure anonymisée, s'ils sont portés par assez de patients différents.
+    const codes = new Set();
+    if (type === 'factures' && top) {
+      const by = new Map();
+      for (const r of top.result.records) {
+        if (!/^[A-Z]{2,3}$/.test(r.code)) continue;
+        if (!by.has(r.code)) by.set(r.code, new Set());
+        by.get(r.code).add(r.patient);
+      }
+      for (const [c, names] of by) if (names.size >= 8) codes.add(c);
+    }
     return {
       type,
       count: top ? top.result.records.length : 0,
       result: top ? top.result : null,
       otherCount: other ? other.result.records.length : 0,
-      structure: variants.map((v) => '# ' + v.label + '\n' + anonymize(v.text)).join('\n\n'),
+      structure: variants.map((v) => '# ' + v.label + '\n' + anonymize(v.text, 40, codes)).join('\n\n'),
     };
   }
 

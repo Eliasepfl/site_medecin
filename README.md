@@ -26,8 +26,11 @@ ne contient aucune donnée et peut être transmis pour faire corriger la lecture
 
 ## Méthode
 
-- **Factures** : une facture = date, libellé (`NOM FV numéro`), patient, montant, dû, payé, NIR.
-  Le texte est découpé à chaque date, quel que soit l'ordre des colonnes ou le nombre de lignes.
+- **Factures** : une ligne = date, libellé (`NOM CODE numéro`, le numéro pouvant manquer), patient,
+  un à trois montants (Dû et Payé peuvent être vides), NIR. Le texte est découpé à chaque date,
+  quel que soit le nombre de lignes. Quand le journal mélange plusieurs codes (FV…), des cases
+  permettent de choisir lesquels compter.
+- Un NIR écrit à côté du nom du patient (`NOM : NIR`) sert aussi au rapprochement.
 - **Patientèle** : une ligne = nom prénom, âge, NIR (13 chiffres), date d'entrée, ALD, régime.
 - Les NIR sont comparés sur leurs 13 premiers chiffres (la clé de contrôle est ignorée).
 - Deux factures concernent le même patient si elles ont le même NIR et un nom compatible
